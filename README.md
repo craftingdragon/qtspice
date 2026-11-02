@@ -22,3 +22,11 @@ The simple viewer connects to a direct SPICE endpoint:
 
 Display and input are implemented for the primary monitor with software rendering. A Proxmox `.vv` connection rendered a Rocky Linux login screen in live validation. Keyboard mapping currently covers standard US keys; broader layouts remain to be done. The Proxmox browser example follows in the next milestone.
 The snapshot option saves the latest frame after two seconds and exits with a nonzero status if no frame arrived.
+
+## Proxmox browser example
+
+```sh
+./build/proxmox-viewer https://your-proxmox-host:8006
+```
+
+Log in through the embedded browser and choose **Console → SPICE**. The example intercepts the downloaded `.vv` file and opens the console in a QtSpice window. Login cookies are persisted by its named WebEngine profile. For an overridable certificate warning, **Continue** remembers that exact certificate, origin, and warning type across restarts; a changed certificate or different Proxmox origin prompts again. The SPICE connection uses the CA and certificate subject from the `.vv` file.

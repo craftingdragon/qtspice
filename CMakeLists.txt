@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS WebEngineWidgets Network)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SPICE REQUIRED IMPORTED_TARGET spice-client-glib-2.0)
 
@@ -18,6 +19,9 @@ target_link_libraries(QtSpice PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets PRIVATE Pkg
 add_executable(simple-viewer examples/simple-viewer/main.cpp)
 target_link_libraries(simple-viewer PRIVATE QtSpice)
 
+add_executable(proxmox-viewer examples/proxmox-viewer/main.cpp examples/proxmox-viewer/certificatestore.cpp examples/proxmox-viewer/certificatestore.h)
+target_link_libraries(proxmox-viewer PRIVATE QtSpice Qt6::WebEngineWidgets Qt6::Network)
+
 include(CTest)
 if(BUILD_TESTING)
   add_executable(qspicesession_test tests/qspicesession_test.cpp)
@@ -29,4 +33,8 @@ if(BUILD_TESTING)
   add_executable(qspiceconnection_test tests/qspiceconnection_test.cpp)
   target_link_libraries(qspiceconnection_test PRIVATE QtSpice Qt6::Test)
   add_test(NAME qspiceconnection_test COMMAND qspiceconnection_test)
+  add_executable(certificatestore_test tests/certificatestore_test.cpp examples/proxmox-viewer/certificatestore.cpp examples/proxmox-viewer/certificatestore.h)
+  target_include_directories(certificatestore_test PRIVATE examples/proxmox-viewer)
+  target_link_libraries(certificatestore_test PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+  add_test(NAME certificatestore_test COMMAND certificatestore_test)
 endif()
