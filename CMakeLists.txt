@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(QtSpice VERSION 0.1.0 LANGUAGES CXX)
+project(QtSpice VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,35 @@ target_include_directories(QtSpice PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOUR
 target_compile_definitions(QtSpice PRIVATE QT_NO_KEYWORDS)
 target_link_libraries(QtSpice PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets PRIVATE PkgConfig::SPICE)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND Qt6Gui_VERSION VERSION_GREATER_EQUAL 6.5)
+  find_package(Qt6 COMPONENTS GuiPrivate QUIET)
+  pkg_check_modules(WAYLAND_CLIENT QUIET IMPORTED_TARGET wayland-client)
+  pkg_check_modules(WAYLAND_PROTOCOLS QUIET wayland-protocols)
+  find_program(WAYLAND_SCANNER wayland-scanner)
+  if(TARGET Qt6::GuiPrivate AND WAYLAND_CLIENT_FOUND AND WAYLAND_PROTOCOLS_FOUND AND WAYLAND_SCANNER)
+    pkg_get_variable(WAYLAND_PROTOCOL_DATA_DIR wayland-protocols pkgdatadir)
+    set(WAYLAND_PROTOCOL_DIR "${WAYLAND_PROTOCOL_DATA_DIR}/unstable")
+    if(EXISTS "${WAYLAND_PROTOCOL_DIR}/pointer-constraints/pointer-constraints-unstable-v1.xml" AND
+       EXISTS "${WAYLAND_PROTOCOL_DIR}/relative-pointer/relative-pointer-unstable-v1.xml")
+      foreach(protocol IN ITEMS pointer-constraints relative-pointer)
+        set(xml "${WAYLAND_PROTOCOL_DIR}/${protocol}/${protocol}-unstable-v1.xml")
+        set(header "${CMAKE_CURRENT_BINARY_DIR}/${protocol}-client-protocol.h")
+        set(code "${CMAKE_CURRENT_BINARY_DIR}/${protocol}-protocol.c")
+        add_custom_command(OUTPUT "${header}" "${code}"
+          COMMAND "${WAYLAND_SCANNER}" client-header "${xml}" "${header}"
+          COMMAND "${WAYLAND_SCANNER}" private-code "${xml}" "${code}"
+          DEPENDS "${xml}" VERBATIM)
+        target_sources(QtSpice PRIVATE "${header}" "${code}")
+      endforeach()
+      target_sources(QtSpice PRIVATE src/widgets/waylandpointerlock.cpp)
+      target_include_directories(QtSpice PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+      target_link_libraries(QtSpice PRIVATE Qt6::GuiPrivate PkgConfig::WAYLAND_CLIENT)
+      target_compile_definitions(QtSpice PRIVATE QTSPICE_WAYLAND_POINTER_LOCK=1)
+      set(QTSPICE_HAS_WAYLAND_POINTER_LOCK ON)
+    endif()
+  endif()
+endif()
+
 add_executable(simple-viewer examples/simple-viewer/main.cpp)
 target_link_libraries(simple-viewer PRIVATE QtSpice)
 
@@ -24,6 +53,12 @@ target_link_libraries(proxmox-viewer PRIVATE QtSpice Qt6::WebEngineWidgets Qt6::
 
 include(CTest)
 if(BUILD_TESTING)
+  if(QTSPICE_HAS_WAYLAND_POINTER_LOCK)
+    add_executable(waylandpointerlock_test tests/waylandpointerlock_test.cpp)
+    target_include_directories(waylandpointerlock_test PRIVATE src/widgets "${CMAKE_CURRENT_BINARY_DIR}")
+    target_link_libraries(waylandpointerlock_test PRIVATE QtSpice Qt6::Test PkgConfig::WAYLAND_CLIENT)
+    add_test(NAME waylandpointerlock_test COMMAND waylandpointerlock_test)
+  endif()
   add_executable(qspicesession_test tests/qspicesession_test.cpp)
   target_link_libraries(qspicesession_test PRIVATE QtSpice Qt6::Test)
   add_test(NAME qspicesession_test COMMAND qspicesession_test)

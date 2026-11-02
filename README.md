@@ -4,7 +4,7 @@ Qt 6 SPICE client library based on `spice-client-glib-2.0`, without GTK widgets.
 
 ## Build
 
-Requires a C++20 compiler, CMake 3.24+, Qt 6 Core and Test, pkg-config, and `spice-client-glib-2.0` development files.
+Requires a C++20 compiler, CMake 3.24+, Qt 6 Core, Gui, Widgets, Test, WebEngineWidgets and Network, pkg-config, and `spice-client-glib-2.0` development files. Native Wayland relative pointer capture is built when Qt 6.5+, Qt GuiPrivate headers, `wayland-client`, `wayland-protocols`, and `wayland-scanner` are available.
 
 ```sh
 cmake -S . -B build
@@ -20,7 +20,8 @@ The simple viewer connects to a direct SPICE endpoint:
 ./build/simple-viewer --snapshot /tmp/frame.png /path/to/console.vv
 ```
 
-Display and input are implemented for the primary monitor with software rendering. A Proxmox `.vv` connection rendered a Rocky Linux login screen in live validation. Keyboard mapping currently covers standard US keys; broader layouts remain to be done. The Proxmox browser example follows in the next milestone.
+Display and input are implemented for the primary monitor with software rendering. A Proxmox `.vv` connection rendered a Rocky Linux login screen in live validation. Keyboard and client mode pointer input have been validated with Proxmox. Keyboard mapping currently covers standard US keys; broader layouts remain to be done.
+In server mouse mode, click the display to capture the pointer and press Ctrl+Alt+G to release it. Native Wayland capture uses the compositor's relative pointer and pointer constraints protocols. A compositor must advertise both protocols. The Wayland build uses Qt's GuiPrivate platform interface to obtain the window surface, so it must be rebuilt after a Qt version change.
 The snapshot option saves the latest frame after two seconds and exits with a nonzero status if no frame arrived.
 
 ## Proxmox browser example

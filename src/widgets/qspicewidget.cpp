@@ -9,12 +9,39 @@
 #include <QGuiApplication>
 #include <QFocusEvent>
 #include <QHideEvent>
+#include <cmath>
+#ifdef QTSPICE_WAYLAND_POINTER_LOCK
+#include "waylandpointerlock.h"
+#endif
 
 namespace QtSpice {
 Widget::Widget(QWidget *parent) : QWidget(parent) {
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
+#ifdef QTSPICE_WAYLAND_POINTER_LOCK
+    if (QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))) {
+        waylandLock_ = std::make_unique<WaylandPointerLock>(
+            [this](double dx, double dy) {
+                relativeRemainderX_ += dx;
+                relativeRemainderY_ += dy;
+                const int x = static_cast<int>(std::trunc(relativeRemainderX_));
+                const int y = static_cast<int>(std::trunc(relativeRemainderY_));
+                relativeRemainderX_ -= x;
+                relativeRemainderY_ -= y;
+                if (session_ && session_->inputReady() && (x || y))
+                    session_->sendRelativePointer(x, y, buttonMask(QGuiApplication::mouseButtons()));
+            },
+            [this](bool locked) {
+                if (!locked && mouseGrabbed_ && session_) session_->releaseAllInputs();
+                mouseGrabbed_ = locked;
+                setCursor(locked ? QCursor(Qt::BlankCursor) : guestCursor_);
+                hasLastMouse_ = false;
+                relativeRemainderX_ = relativeRemainderY_ = 0;
+            });
+    }
+#endif
 }
+Widget::~Widget() { releaseMouseGrab(); }
 void Widget::setSession(Session *session) {
     if (session_) session_->releaseAllInputs();
     releaseMouseGrab();
@@ -56,8 +83,11 @@ void Widget::setSession(Session *session) {
     });
 }
 void Widget::releaseMouseGrab() {
+#ifdef QTSPICE_WAYLAND_POINTER_LOCK
+    if (waylandLock_) waylandLock_->release();
+#endif
     if (mouseGrabbed_) {
-        releaseMouse();
+        if (QGuiApplication::platformName() == QStringLiteral("xcb")) releaseMouse();
         mouseGrabbed_ = false;
         setCursor(guestCursor_);
     }
@@ -82,6 +112,9 @@ int Widget::spiceButton(Qt::MouseButton button) {
 void Widget::mouseMoveEvent(QMouseEvent *event) {
     if (session_ && session_->inputReady() && !frame_.isNull()) {
         if (session_->mouseMode() == Session::MouseMode::Server) {
+#ifdef QTSPICE_WAYLAND_POINTER_LOCK
+            if (waylandLock_) return; // Relative events arrive through the compositor while locked.
+#endif
             QPoint p = event->position().toPoint();
             if (mouseGrabbed_ && QGuiApplication::platformName() == QStringLiteral("xcb") &&
                 qEnvironmentVariable("XDG_SESSION_TYPE") != QStringLiteral("wayland")) {
@@ -106,6 +139,15 @@ void Widget::mouseMoveEvent(QMouseEvent *event) {
 void Widget::mousePressEvent(QMouseEvent *event) {
     setFocus();
     bool justGrabbed = false;
+#ifdef QTSPICE_WAYLAND_POINTER_LOCK
+    if (waylandLock_ && session_ && session_->inputReady() &&
+        session_->mouseMode() == Session::MouseMode::Server && !mouseGrabbed_) {
+        if (!waylandLock_->request(window()->windowHandle())) {
+            setToolTip(QStringLiteral("Wayland compositor does not support relative pointer capture"));
+        }
+        return;
+    }
+#endif
     if (session_ && session_->inputReady() && session_->mouseMode() == Session::MouseMode::Server &&
         QGuiApplication::platformName() == QStringLiteral("xcb") && !mouseGrabbed_) {
         grabMouse();

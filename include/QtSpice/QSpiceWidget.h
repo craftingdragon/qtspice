@@ -4,13 +4,16 @@
 #include <QPointer>
 #include <QString>
 #include <QCursor>
+#include <memory>
 
 namespace QtSpice {
 class Session;
+class WaylandPointerLock;
 class Widget final : public QWidget {
     Q_OBJECT
 public:
     explicit Widget(QWidget *parent = nullptr);
+    ~Widget() override;
     void setSession(Session *session);
     QSize sizeHint() const override;
 protected:
@@ -31,6 +34,9 @@ private:
     bool mouseGrabbed_ = false;
     bool hasLastMouse_ = false;
     QPoint lastMouse_;
+    std::unique_ptr<WaylandPointerLock> waylandLock_;
+    double relativeRemainderX_ = 0;
+    double relativeRemainderY_ = 0;
     void releaseMouseGrab();
     static int buttonMask(Qt::MouseButtons);
     static int spiceButton(Qt::MouseButton);
