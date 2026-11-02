@@ -6,32 +6,16 @@
 
 namespace QtSpice {
 
-Session::Worker::Worker(Session *o)
-    : owner(o), context(g_main_context_new()), loop(g_main_loop_new(context, FALSE)) {
-    thread = std::thread([this] {
-        g_main_context_push_thread_default(context);
-        g_main_loop_run(loop);
-        disconnect();
-        g_main_context_pop_thread_default(context);
-    });
-}
+Session::Worker::Worker(Session *o) : owner(o) {}
 
 Session::Worker::~Worker() {
-    post([this] { g_main_loop_quit(loop); });
-    thread.join();
-    g_main_loop_unref(loop);
-    g_main_context_unref(context);
+    disconnect();
 }
 
 void Session::Worker::post(std::function<void()> task) {
-    auto *heap = new std::function<void()>(std::move(task));
-    GSource *source = g_idle_source_new();
-    g_source_set_callback(source, [](gpointer data) -> gboolean {
-        (*static_cast<std::function<void()> *>(data))();
-        return G_SOURCE_REMOVE;
-    }, heap, [](gpointer data) { delete static_cast<std::function<void()> *>(data); });
-    g_source_attach(source, context);
-    g_source_unref(source);
+    // spice-client-glib dispatches channel callbacks through Qt's GLib event dispatcher on Linux.
+    // Keep SPICE calls and teardown on that same thread.
+    task();
 }
 
 void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpointer data) {
@@ -158,8 +142,12 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
 
 void Session::Worker::disconnect() {
     if (!session) return;
-    spice_session_disconnect(session);
+    GList *channels = spice_session_get_channels(session);
+    for (GList *item = channels; item; item = item->next)
+        g_signal_handlers_disconnect_by_data(item->data, this);
+    g_list_free(channels);
     g_signal_handlers_disconnect_by_data(session, this);
+    spice_session_disconnect(session);
     g_object_unref(session);
     session = nullptr;
     display = nullptr;

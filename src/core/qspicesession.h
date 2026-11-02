@@ -2,7 +2,6 @@
 
 #include <QtSpice/QSpiceSession.h>
 #include <functional>
-#include <thread>
 #include <glib.h>
 #include <spice-client.h>
 
@@ -17,8 +16,6 @@ struct QtSpice::Session::Worker {
     static void onChannelEvent(SpiceChannel *, SpiceChannelEvent, gpointer);
 
     Session *owner;
-    GMainContext *context;
-    GMainLoop *loop;
     SpiceSession *session = nullptr;
     SpiceDisplayChannel *display = nullptr;
     SpiceInputsChannel *inputs = nullptr;
@@ -29,7 +26,6 @@ struct QtSpice::Session::Worker {
     int lastX = 0;
     int lastY = 0;
     bool hasPointer = false;
-    std::thread thread;
     static void onDisplayChanged(SpiceChannel *, gpointer);
     static void onInvalidate(SpiceChannel *, gint, gint, gint, gint, gpointer);
     static void onCursorSet(SpiceCursorChannel *, gint, gint, gint, gint, gpointer, gpointer);

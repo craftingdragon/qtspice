@@ -49,6 +49,15 @@ private slots:
         session.sendButton(1, false, 0);
         QCOMPARE(session.state(), QtSpice::Session::State::Disconnected);
     }
+    void destroyDuringHandshake() {
+        for (int i = 0; i < 20; ++i) {
+            auto *session = new QtSpice::Session;
+            session->connectToHost(QStringLiteral("127.0.0.1"), 1);
+            QCoreApplication::processEvents();
+            delete session;
+            QCoreApplication::processEvents();
+        }
+    }
 };
 QTEST_GUILESS_MAIN(SessionTest)
 #include "qspicesession_test.moc"
