@@ -32,7 +32,15 @@ public:
         setCentralWidget(widget);
         connect(&session_, &QtSpice::Session::errorOccurred, this, [this](const QString &message) { statusBar()->showMessage(message); });
         connect(&session_, &QtSpice::Session::stateChanged, this, [this](QtSpice::Session::State state) {
-            if (state == QtSpice::Session::State::Connected) statusBar()->showMessage(QStringLiteral("Connected"));
+            if (state == QtSpice::Session::State::Connected)
+                statusBar()->showMessage(session_.mouseMode() == QtSpice::Session::MouseMode::Server
+                    ? QStringLiteral("Connected · Relative mouse: click console to capture; Ctrl+Alt+G releases it")
+                    : QStringLiteral("Connected · Absolute mouse mode"));
+        });
+        connect(&session_, &QtSpice::Session::mouseModeChanged, this, [this](QtSpice::Session::MouseMode mode) {
+            if (mode == QtSpice::Session::MouseMode::Server)
+                statusBar()->showMessage(QStringLiteral("Relative mouse: click console to capture; Ctrl+Alt+G releases it"));
+            else statusBar()->showMessage(QStringLiteral("Absolute mouse mode"));
         });
         resize(1100, 800);
         show();

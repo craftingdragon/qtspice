@@ -66,4 +66,33 @@ quint32 xtScanCode(int key) {
     if (key >= Qt::Key_0 && key <= Qt::Key_9) return digits[key - Qt::Key_0];
     return 0;
 }
+
+quint32 nativeXtScanCode(quint32 nativeScanCode, int qtKey) {
+    if (!nativeScanCode) return xtScanCode(qtKey);
+    if (nativeScanCode < 8) return 0;
+    const quint32 evdev = nativeScanCode - 8;
+    // Linux evdev and XT set 1 share the PC keyboard's first 88 positions.
+    if (evdev >= 1 && evdev <= 0x58) return evdev;
+    switch (evdev) {
+    case 0x60: return 0x11c; // keypad Enter
+    case 0x61: return 0x11d; // right Control
+    case 0x62: return 0x135; // keypad Divide
+    case 0x63: return 0x137; // Print Screen
+    case 0x64: return 0x138; // right Alt / AltGr
+    case 0x66: return 0x147; // Home
+    case 0x67: return 0x148; // Up
+    case 0x68: return 0x149; // Page Up
+    case 0x69: return 0x14b; // Left
+    case 0x6a: return 0x14d; // Right
+    case 0x6b: return 0x14f; // End
+    case 0x6c: return 0x150; // Down
+    case 0x6d: return 0x151; // Page Down
+    case 0x6e: return 0x152; // Insert
+    case 0x6f: return 0x153; // Delete
+    case 0x7d: return 0x15b; // left Meta
+    case 0x7e: return 0x15c; // right Meta
+    case 0x7f: return 0x15d; // Menu
+    default: return 0;
+    }
+}
 }

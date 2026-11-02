@@ -2,7 +2,10 @@
 #include <QtSpice/QSpiceDisplay.h>
 
 #include <QMetaObject>
+#include <QLoggingCategory>
 #include <utility>
+
+Q_LOGGING_CATEGORY(inputLog, "qtspice.input")
 
 namespace QtSpice {
 
@@ -25,6 +28,7 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
     if (type == SPICE_CHANNEL_MAIN) {
         self->main = SPICE_MAIN_CHANNEL(channel);
+        g_signal_connect(channel, "main-mouse-update", G_CALLBACK(onMouseUpdate), self);
     } else if (type == SPICE_CHANNEL_DISPLAY && id == 0) {
         self->display = SPICE_DISPLAY_CHANNEL(channel);
         self->displayId = id;
@@ -52,7 +56,13 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
     if (channel == SPICE_CHANNEL(self->display)) self->display = nullptr;
-    if (channel == SPICE_CHANNEL(self->inputs)) { self->inputs = nullptr; self->inputsReady = false; }
+    if (channel == SPICE_CHANNEL(self->inputs)) {
+        self->inputs = nullptr;
+        self->inputsReady = false;
+        self->pressedKeys.clear();
+        self->pressedButtons.clear();
+        QMetaObject::invokeMethod(self->owner, [owner = self->owner] { owner->setInputReady(false); }, Qt::QueuedConnection);
+    }
     if (channel == SPICE_CHANNEL(self->cursor)) self->cursor = nullptr;
     if (channel == SPICE_CHANNEL(self->main)) self->main = nullptr;
     g_signal_handlers_disconnect_by_data(channel, self);
@@ -85,16 +95,35 @@ void Session::Worker::onCursorHide(SpiceCursorChannel *, gpointer data) {
     QMetaObject::invokeMethod(self->owner, [owner = self->owner] { Q_EMIT owner->cursorChanged({}, 0, 0); }, Qt::QueuedConnection);
 }
 
+void Session::Worker::onMouseUpdate(SpiceMainChannel *channel, gpointer data) {
+    auto *self = static_cast<Worker *>(data);
+    int mode = SPICE_MOUSE_MODE_CLIENT;
+    g_object_get(channel, "mouse-mode", &mode, nullptr);
+    qCDebug(inputLog) << "mouse mode" << mode;
+    if (mode != SPICE_MOUSE_MODE_CLIENT && mode != SPICE_MOUSE_MODE_SERVER) return;
+    const auto value = mode == SPICE_MOUSE_MODE_SERVER ? MouseMode::Server : MouseMode::Client;
+    self->hasPointer = false;
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, value] { owner->setMouseMode(value); }, Qt::QueuedConnection);
+}
+
 void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent event, gpointer data) {
     auto *self = static_cast<Worker *>(data);
     int type = 0;
     g_object_get(channel, "channel-type", &type, nullptr);
     if (channel == SPICE_CHANNEL(self->inputs)) {
         if (event == SPICE_CHANNEL_OPENED) self->inputsReady = true;
-        else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) self->inputsReady = false;
+        else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) {
+            self->inputsReady = false;
+            self->pressedKeys.clear();
+            self->pressedButtons.clear();
+        }
+        const bool ready = self->inputsReady;
+        qCDebug(inputLog) << "inputs channel event" << event << "ready" << ready;
+        QMetaObject::invokeMethod(self->owner, [owner = self->owner, ready] { owner->setInputReady(ready); }, Qt::QueuedConnection);
     }
     if (type != SPICE_CHANNEL_MAIN) return;
     if (event == SPICE_CHANNEL_OPENED) {
+        onMouseUpdate(SPICE_MAIN_CHANNEL(channel), self);
         QMetaObject::invokeMethod(self->owner, [owner = self->owner] { owner->setState(State::Connected); }, Qt::QueuedConnection);
     } else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) {
         self->inputsReady = false;
@@ -142,6 +171,7 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
 
 void Session::Worker::disconnect() {
     if (!session) return;
+    releaseInputs();
     GList *channels = spice_session_get_channels(session);
     for (GList *item = channels; item; item = item->next)
         g_signal_handlers_disconnect_by_data(item->data, this);
@@ -156,16 +186,48 @@ void Session::Worker::disconnect() {
     cursor = nullptr;
     main = nullptr;
     hasPointer = false;
+    pressedKeys.clear();
+    pressedButtons.clear();
+    buttonState = 0;
+    owner->setInputReady(false);
+    owner->setMouseMode(MouseMode::Client);
+}
+
+void Session::Worker::releaseInputs() {
+    if (inputsReady && inputs) {
+        for (quint32 key : std::as_const(pressedKeys)) spice_inputs_channel_key_release(inputs, key);
+        int remaining = buttonState;
+        for (int button : std::as_const(pressedButtons)) {
+            spice_inputs_channel_button_release(inputs, button, remaining);
+            remaining &= ~(1 << (button - 1));
+        }
+    }
+    pressedKeys.clear();
+    pressedButtons.clear();
+    buttonState = 0;
+    hasPointer = false;
 }
 
 Session::Session(QObject *parent) : QObject(parent), worker_(std::make_unique<Worker>(this)) {}
 Session::~Session() = default;
 Session::State Session::state() const noexcept { return state_; }
+Session::MouseMode Session::mouseMode() const noexcept { return mouseMode_; }
+bool Session::inputReady() const noexcept { return inputReady_; }
 
 void Session::setState(State state) {
     if (state_ == state) return;
     state_ = state;
     Q_EMIT stateChanged(state);
+}
+void Session::setMouseMode(MouseMode mode) {
+    if (mouseMode_ == mode) return;
+    mouseMode_ = mode;
+    Q_EMIT mouseModeChanged(mode);
+}
+void Session::setInputReady(bool ready) {
+    if (inputReady_ == ready) return;
+    inputReady_ = ready;
+    Q_EMIT inputReadyChanged(ready);
 }
 
 void Session::connectToHost(const QString &host, quint16 port) {
@@ -193,8 +255,12 @@ void Session::sendKey(quint32 scancode, bool pressed) {
     if (!scancode) return;
     worker_->post([w = worker_.get(), scancode, pressed] {
         if (!w->inputsReady || !w->inputs) return;
-        if (pressed) spice_inputs_channel_key_press(w->inputs, scancode);
-        else spice_inputs_channel_key_release(w->inputs, scancode);
+        if (pressed && !w->pressedKeys.contains(scancode)) {
+            w->pressedKeys.insert(scancode);
+            spice_inputs_channel_key_press(w->inputs, scancode);
+        } else if (!pressed && w->pressedKeys.remove(scancode)) {
+            spice_inputs_channel_key_release(w->inputs, scancode);
+        }
     });
 }
 
@@ -203,10 +269,11 @@ void Session::sendPointer(int x, int y, int buttons) {
         if (!w->inputsReady || !w->inputs) return;
         int mode = SPICE_MOUSE_MODE_CLIENT;
         if (w->main) g_object_get(w->main, "mouse-mode", &mode, nullptr);
-        if (mode == SPICE_MOUSE_MODE_SERVER) {
-            if (w->hasPointer) spice_inputs_channel_motion(w->inputs, x - w->lastX, y - w->lastY, buttons);
-        } else {
+        qCDebug(inputLog) << "absolute pointer" << x << y << "mode" << mode << "buttons" << buttons;
+        if (mode == SPICE_MOUSE_MODE_CLIENT) {
             spice_inputs_channel_position(w->inputs, x, y, w->displayId, buttons);
+        } else if (mode == SPICE_MOUSE_MODE_SERVER && w->hasPointer) {
+            spice_inputs_channel_motion(w->inputs, x - w->lastX, y - w->lastY, buttons);
         }
         w->lastX = x;
         w->lastY = y;
@@ -214,12 +281,32 @@ void Session::sendPointer(int x, int y, int buttons) {
     });
 }
 
-void Session::sendButton(int button, bool pressed, int buttons) {
-    worker_->post([w = worker_.get(), button, pressed, buttons] {
-        if (!w->inputsReady || !w->inputs) return;
-        if (pressed) spice_inputs_channel_button_press(w->inputs, button, buttons);
-        else spice_inputs_channel_button_release(w->inputs, button, buttons);
+void Session::sendRelativePointer(int dx, int dy, int buttons) {
+    worker_->post([w = worker_.get(), dx, dy, buttons] {
+        if (w->inputsReady && w->inputs && (dx || dy)) {
+            qCDebug(inputLog) << "relative pointer" << dx << dy << "buttons" << buttons;
+            spice_inputs_channel_motion(w->inputs, dx, dy, buttons);
+        }
     });
 }
+
+void Session::sendButton(int button, bool pressed, int buttons) {
+    if (button < 1 || button > 7) return;
+    worker_->post([w = worker_.get(), button, pressed, buttons] {
+        if (!w->inputsReady || !w->inputs) return;
+        qCDebug(inputLog) << "button" << button << (pressed ? "press" : "release") << "prior state" << buttons;
+        w->buttonState = pressed ? buttons | (1 << (button - 1)) : buttons & ~(1 << (button - 1));
+        if (pressed) {
+            if (!w->pressedButtons.contains(button)) {
+                w->pressedButtons.insert(button);
+                spice_inputs_channel_button_press(w->inputs, button, buttons);
+            }
+        } else if (w->pressedButtons.remove(button)) {
+            spice_inputs_channel_button_release(w->inputs, button, buttons);
+        }
+    });
+}
+
+void Session::releaseAllInputs() { worker_->post([w = worker_.get()] { w->releaseInputs(); }); }
 
 } // namespace QtSpice

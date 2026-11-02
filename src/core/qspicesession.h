@@ -4,6 +4,7 @@
 #include <functional>
 #include <glib.h>
 #include <spice-client.h>
+#include <QSet>
 
 struct QtSpice::Session::Worker {
     explicit Worker(Session *owner);
@@ -26,6 +27,11 @@ struct QtSpice::Session::Worker {
     int lastX = 0;
     int lastY = 0;
     bool hasPointer = false;
+    QSet<quint32> pressedKeys;
+    QSet<int> pressedButtons;
+    int buttonState = 0;
+    void releaseInputs();
+    static void onMouseUpdate(SpiceMainChannel *, gpointer);
     static void onDisplayChanged(SpiceChannel *, gpointer);
     static void onInvalidate(SpiceChannel *, gint, gint, gint, gint, gpointer);
     static void onCursorSet(SpiceCursorChannel *, gint, gint, gint, gint, gpointer, gpointer);

@@ -6,6 +6,9 @@
 #include <QWheelEvent>
 #include <QKeyEvent>
 #include <QCursor>
+#include <QGuiApplication>
+#include <QFocusEvent>
+#include <QHideEvent>
 
 namespace QtSpice {
 Widget::Widget(QWidget *parent) : QWidget(parent) {
@@ -13,6 +16,10 @@ Widget::Widget(QWidget *parent) : QWidget(parent) {
     setMouseTracking(true);
 }
 void Widget::setSession(Session *session) {
+    if (session_) session_->releaseAllInputs();
+    releaseMouseGrab();
+    guestCursor_ = QCursor();
+    unsetCursor();
     if (session_) disconnect(session_, nullptr, this, nullptr);
     session_ = session;
     frame_ = {};
@@ -23,7 +30,7 @@ void Widget::setSession(Session *session) {
     connect(session_, &Session::stateChanged, this, [this](Session::State state) {
         if (state == Session::State::Connecting) statusText_ = QStringLiteral("Connecting…");
         else if (state == Session::State::Connected) statusText_ = QStringLiteral("Waiting for display…");
-        else { statusText_ = QStringLiteral("Disconnected"); frame_ = {}; }
+        else { statusText_ = QStringLiteral("Disconnected"); frame_ = {}; releaseMouseGrab(); }
         update();
     });
     connect(session_, &Session::errorOccurred, this, [this](const QString &message) {
@@ -31,9 +38,30 @@ void Widget::setSession(Session *session) {
         update();
     });
     connect(session_, &Session::cursorChanged, this, [this](const QImage &image, int hotX, int hotY) {
-        if (image.isNull()) unsetCursor();
-        else setCursor(QCursor(QPixmap::fromImage(image), hotX, hotY));
+        guestCursor_ = image.isNull() ? QCursor() : QCursor(QPixmap::fromImage(image), hotX, hotY);
+        if (!mouseGrabbed_) setCursor(guestCursor_);
     });
+    connect(session_, &Session::mouseModeChanged, this, [this](Session::MouseMode mode) {
+        session_->releaseAllInputs();
+        hasLastMouse_ = false;
+        if (mode == Session::MouseMode::Client) {
+            releaseMouseGrab();
+            setToolTip({});
+        } else {
+            setToolTip(QStringLiteral("Click to capture mouse; Ctrl+Alt+G releases it"));
+        }
+    });
+    connect(session_, &Session::inputReadyChanged, this, [this](bool ready) {
+        if (!ready) releaseMouseGrab();
+    });
+}
+void Widget::releaseMouseGrab() {
+    if (mouseGrabbed_) {
+        releaseMouse();
+        mouseGrabbed_ = false;
+        setCursor(guestCursor_);
+    }
+    hasLastMouse_ = false;
 }
 QSize Widget::sizeHint() const { return frame_.isNull() ? QSize(800, 600) : frame_.size(); }
 void Widget::paintEvent(QPaintEvent *) {
@@ -52,22 +80,57 @@ int Widget::spiceButton(Qt::MouseButton button) {
     return 0;
 }
 void Widget::mouseMoveEvent(QMouseEvent *event) {
-    if (session_ && !frame_.isNull()) {
+    if (session_ && session_->inputReady() && !frame_.isNull()) {
+        if (session_->mouseMode() == Session::MouseMode::Server) {
+            QPoint p = event->position().toPoint();
+            if (mouseGrabbed_ && QGuiApplication::platformName() == QStringLiteral("xcb") &&
+                qEnvironmentVariable("XDG_SESSION_TYPE") != QStringLiteral("wayland")) {
+                QPoint center = rect().center();
+                QPoint delta = p - center;
+                if (!delta.isNull()) {
+                    session_->sendRelativePointer(delta.x(), delta.y(), buttonMask(event->buttons()));
+                    QCursor::setPos(mapToGlobal(center));
+                }
+            } else if (hasLastMouse_) {
+                QPoint delta = p - lastMouse_;
+                session_->sendRelativePointer(delta.x(), delta.y(), buttonMask(event->buttons()));
+            }
+            lastMouse_ = p;
+            hasLastMouse_ = true;
+            return;
+        }
         QPoint p = guestPoint(event->position().toPoint(), frame_.size(), size());
         session_->sendPointer(p.x(), p.y(), buttonMask(event->buttons()));
     }
 }
 void Widget::mousePressEvent(QMouseEvent *event) {
     setFocus();
-    mouseMoveEvent(event);
-    if (session_ && spiceButton(event->button())) session_->sendButton(spiceButton(event->button()), true, buttonMask(event->buttons()));
+    bool justGrabbed = false;
+    if (session_ && session_->inputReady() && session_->mouseMode() == Session::MouseMode::Server &&
+        QGuiApplication::platformName() == QStringLiteral("xcb") && !mouseGrabbed_) {
+        grabMouse();
+        mouseGrabbed_ = QWidget::mouseGrabber() == this;
+        if (!mouseGrabbed_) return;
+        justGrabbed = true;
+        setCursor(Qt::BlankCursor);
+        if (qEnvironmentVariable("XDG_SESSION_TYPE") == QStringLiteral("wayland")) {
+            lastMouse_ = event->position().toPoint();
+            hasLastMouse_ = true;
+        } else {
+            QCursor::setPos(mapToGlobal(rect().center()));
+        }
+    }
+    if (!justGrabbed) mouseMoveEvent(event);
+    if (session_ && spiceButton(event->button()))
+        session_->sendButton(spiceButton(event->button()), true, buttonMask(event->buttons() & ~event->button()));
 }
 void Widget::mouseReleaseEvent(QMouseEvent *event) {
-    if (session_ && spiceButton(event->button())) session_->sendButton(spiceButton(event->button()), false, buttonMask(event->buttons()));
+    if (session_ && spiceButton(event->button()))
+        session_->sendButton(spiceButton(event->button()), false, buttonMask(event->buttons() | event->button()));
     mouseMoveEvent(event);
 }
 void Widget::wheelEvent(QWheelEvent *event) {
-    if (!session_) return;
+    if (!session_ || !session_->inputReady() || event->angleDelta().y() == 0) return;
     int button = event->angleDelta().y() > 0 ? 4 : 5;
     int steps = qAbs(event->angleDelta().y()) / 120;
     for (int i = 0; i < steps; ++i) {
@@ -77,11 +140,28 @@ void Widget::wheelEvent(QWheelEvent *event) {
     event->accept();
 }
 void Widget::keyPressEvent(QKeyEvent *event) {
-    if (session_ && !event->isAutoRepeat()) session_->sendKey(xtScanCode(event->key()), true);
+    if (mouseGrabbed_ && event->key() == Qt::Key_G &&
+        (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier)) == (Qt::ControlModifier | Qt::AltModifier)) {
+        if (session_) session_->releaseAllInputs();
+        releaseMouseGrab();
+        event->accept();
+        return;
+    }
+    if (session_ && !event->isAutoRepeat()) session_->sendKey(nativeXtScanCode(event->nativeScanCode(), event->key()), true);
     event->accept();
 }
 void Widget::keyReleaseEvent(QKeyEvent *event) {
-    if (session_ && !event->isAutoRepeat()) session_->sendKey(xtScanCode(event->key()), false);
+    if (session_ && !event->isAutoRepeat()) session_->sendKey(nativeXtScanCode(event->nativeScanCode(), event->key()), false);
     event->accept();
+}
+void Widget::focusOutEvent(QFocusEvent *event) {
+    if (session_) session_->releaseAllInputs();
+    releaseMouseGrab();
+    QWidget::focusOutEvent(event);
+}
+void Widget::hideEvent(QHideEvent *event) {
+    if (session_) session_->releaseAllInputs();
+    releaseMouseGrab();
+    QWidget::hideEvent(event);
 }
 }

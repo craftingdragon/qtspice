@@ -41,10 +41,14 @@ private slots:
     }
     void disconnectedInputIsIgnored() {
         QtSpice::Session session;
+        QCOMPARE(session.mouseMode(), QtSpice::Session::MouseMode::Client);
+        QVERIFY(!session.inputReady());
         session.sendKey(0x1e, true);
         session.sendKey(0x1e, false);
         session.sendPointer(10, 20, 0);
+        session.sendRelativePointer(1, -1, 0);
         session.sendButton(1, true, 1);
+        session.releaseAllInputs();
         session.disconnectFromHost();
         session.sendButton(1, false, 0);
         QCOMPARE(session.state(), QtSpice::Session::State::Disconnected);

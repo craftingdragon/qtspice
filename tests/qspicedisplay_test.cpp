@@ -24,6 +24,13 @@ private Q_SLOTS:
         QCOMPARE(QtSpice::xtScanCode(Qt::Key_A), quint32(0x1e));
         QCOMPARE(QtSpice::xtScanCode(Qt::Key_Up), quint32(0x148));
         QCOMPARE(QtSpice::xtScanCode(Qt::Key_unknown), quint32(0));
+        QCOMPARE(QtSpice::nativeXtScanCode(0x1e + 8, Qt::Key_Q), quint32(0x1e));
+        QCOMPARE(QtSpice::nativeXtScanCode(0x61 + 8, Qt::Key_Control), quint32(0x11d));
+        QCOMPARE(QtSpice::nativeXtScanCode(0x64 + 8, Qt::Key_AltGr), quint32(0x138));
+        QCOMPARE(QtSpice::nativeXtScanCode(0x60 + 8, Qt::Key_Enter), quint32(0x11c));
+        QCOMPARE(QtSpice::nativeXtScanCode(0x67 + 8, Qt::Key_Up), quint32(0x148));
+        QCOMPARE(QtSpice::nativeXtScanCode(0, Qt::Key_A), quint32(0x1e));
+        QCOMPARE(QtSpice::nativeXtScanCode(9999, Qt::Key_A), quint32(0));
     }
 };
 QTEST_GUILESS_MAIN(DisplayTest)

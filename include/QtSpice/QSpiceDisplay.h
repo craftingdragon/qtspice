@@ -9,4 +9,5 @@ QImage copyPrimary(int format, int width, int height, int stride, const unsigned
 QRect fittedRect(QSize source, QSize target);
 QPoint guestPoint(QPoint widgetPoint, QSize guestSize, QSize widgetSize);
 quint32 xtScanCode(int qtKey);
+quint32 nativeXtScanCode(quint32 nativeScanCode, int qtKey);
 }
