@@ -12,4 +12,10 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The first milestone provides a session core. Display, input, connection files, and viewer examples follow in later milestones.
+The simple viewer connects to a direct SPICE endpoint:
+
+```sh
+./build/simple-viewer spice://localhost:5900
+```
+
+Display and input are implemented for the primary monitor with software rendering. Keyboard mapping currently covers standard US keys; live server validation and broader layouts remain to be done. Connection files and the Proxmox viewer follow in later milestones.

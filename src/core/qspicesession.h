@@ -20,5 +20,17 @@ struct QtSpice::Session::Worker {
     GMainContext *context;
     GMainLoop *loop;
     SpiceSession *session = nullptr;
+    SpiceDisplayChannel *display = nullptr;
+    SpiceInputsChannel *inputs = nullptr;
+    SpiceCursorChannel *cursor = nullptr;
+    SpiceMainChannel *main = nullptr;
+    int displayId = 0;
+    int lastX = 0;
+    int lastY = 0;
+    bool hasPointer = false;
     std::thread thread;
+    static void onDisplayChanged(SpiceChannel *, gpointer);
+    static void onInvalidate(SpiceChannel *, gint, gint, gint, gint, gpointer);
+    static void onCursorSet(SpiceCursorChannel *, gint, gint, gint, gint, gpointer, gpointer);
+    static void onCursorHide(SpiceCursorChannel *, gpointer);
 };

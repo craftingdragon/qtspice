@@ -1,4 +1,5 @@
 #include "qspicesession.h"
+#include <QtSpice/QSpiceDisplay.h>
 
 #include <QMetaObject>
 #include <utility>
@@ -38,6 +39,23 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
     g_signal_connect(channel, "channel-event", G_CALLBACK(onChannelEvent), self);
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
+    if (type == SPICE_CHANNEL_MAIN) {
+        self->main = SPICE_MAIN_CHANNEL(channel);
+    } else if (type == SPICE_CHANNEL_DISPLAY && id == 0) {
+        self->display = SPICE_DISPLAY_CHANNEL(channel);
+        self->displayId = id;
+        g_signal_connect(channel, "display-primary-create", G_CALLBACK(+[](SpiceChannel *c, gint, gint, gint, gint, gint, gpointer, gpointer d) {
+            Worker::onDisplayChanged(c, d);
+        }), self);
+        g_signal_connect(channel, "display-primary-destroy", G_CALLBACK(onDisplayChanged), self);
+        g_signal_connect(channel, "display-invalidate", G_CALLBACK(onInvalidate), self);
+    } else if (type == SPICE_CHANNEL_INPUTS) {
+        self->inputs = SPICE_INPUTS_CHANNEL(channel);
+    } else if (type == SPICE_CHANNEL_CURSOR && id == 0) {
+        self->cursor = SPICE_CURSOR_CHANNEL(channel);
+        g_signal_connect(channel, "cursor-set", G_CALLBACK(onCursorSet), self);
+        g_signal_connect(channel, "cursor-hide", G_CALLBACK(onCursorHide), self);
+    }
     QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id] { Q_EMIT owner->channelAdded(type, id); }, Qt::QueuedConnection);
 }
 
@@ -45,8 +63,38 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     auto *self = static_cast<Worker *>(data);
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
+    if (channel == SPICE_CHANNEL(self->display)) self->display = nullptr;
+    if (channel == SPICE_CHANNEL(self->inputs)) self->inputs = nullptr;
+    if (channel == SPICE_CHANNEL(self->cursor)) self->cursor = nullptr;
+    if (channel == SPICE_CHANNEL(self->main)) self->main = nullptr;
     g_signal_handlers_disconnect_by_data(channel, self);
     QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id] { Q_EMIT owner->channelRemoved(type, id); }, Qt::QueuedConnection);
+}
+
+void Session::Worker::onDisplayChanged(SpiceChannel *channel, gpointer data) {
+    auto *self = static_cast<Worker *>(data);
+    SpiceDisplayPrimary primary{};
+    QImage image;
+    if (spice_display_channel_get_primary(channel, 0, &primary))
+        image = copyPrimary(primary.format, primary.width, primary.height, primary.stride, primary.data);
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, image] { Q_EMIT owner->frameReady(image); }, Qt::QueuedConnection);
+}
+
+void Session::Worker::onInvalidate(SpiceChannel *channel, gint, gint, gint, gint, gpointer data) {
+    onDisplayChanged(channel, data);
+}
+
+void Session::Worker::onCursorSet(SpiceCursorChannel *, gint width, gint height, gint hotX, gint hotY, gpointer rgba, gpointer data) {
+    auto *self = static_cast<Worker *>(data);
+    QImage image;
+    if (rgba && width > 0 && height > 0 && width <= 256 && height <= 256)
+        image = QImage(static_cast<const uchar *>(rgba), width, height, QImage::Format_ARGB32).copy();
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, image, hotX, hotY] { Q_EMIT owner->cursorChanged(image, hotX, hotY); }, Qt::QueuedConnection);
+}
+
+void Session::Worker::onCursorHide(SpiceCursorChannel *, gpointer data) {
+    auto *self = static_cast<Worker *>(data);
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner] { Q_EMIT owner->cursorChanged({}, 0, 0); }, Qt::QueuedConnection);
 }
 
 void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent event, gpointer data) {
@@ -88,6 +136,11 @@ void Session::Worker::disconnect() {
     g_signal_handlers_disconnect_by_data(session, this);
     g_object_unref(session);
     session = nullptr;
+    display = nullptr;
+    inputs = nullptr;
+    cursor = nullptr;
+    main = nullptr;
+    hasPointer = false;
 }
 
 Session::Session(QObject *parent) : QObject(parent), worker_(std::make_unique<Worker>(this)) {}
@@ -112,6 +165,39 @@ void Session::connectToHost(const QString &host, quint16 port) {
 void Session::disconnectFromHost() {
     worker_->post([worker = worker_.get()] { worker->disconnect(); });
     setState(State::Disconnected);
+}
+
+void Session::sendKey(quint32 scancode, bool pressed) {
+    if (!scancode) return;
+    worker_->post([w = worker_.get(), scancode, pressed] {
+        if (!w->inputs) return;
+        if (pressed) spice_inputs_channel_key_press(w->inputs, scancode);
+        else spice_inputs_channel_key_release(w->inputs, scancode);
+    });
+}
+
+void Session::sendPointer(int x, int y, int buttons) {
+    worker_->post([w = worker_.get(), x, y, buttons] {
+        if (!w->inputs) return;
+        int mode = SPICE_MOUSE_MODE_CLIENT;
+        if (w->main) g_object_get(w->main, "mouse-mode", &mode, nullptr);
+        if (mode == SPICE_MOUSE_MODE_SERVER) {
+            if (w->hasPointer) spice_inputs_channel_motion(w->inputs, x - w->lastX, y - w->lastY, buttons);
+        } else {
+            spice_inputs_channel_position(w->inputs, x, y, w->displayId, buttons);
+        }
+        w->lastX = x;
+        w->lastY = y;
+        w->hasPointer = true;
+    });
+}
+
+void Session::sendButton(int button, bool pressed, int buttons) {
+    worker_->post([w = worker_.get(), button, pressed, buttons] {
+        if (!w->inputs) return;
+        if (pressed) spice_inputs_channel_button_press(w->inputs, button, buttons);
+        else spice_inputs_channel_button_release(w->inputs, button, buttons);
+    });
 }
 
 } // namespace QtSpice
