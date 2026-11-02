@@ -16,9 +16,20 @@ void Widget::setSession(Session *session) {
     if (session_) disconnect(session_, nullptr, this, nullptr);
     session_ = session;
     frame_ = {};
+    statusText_ = QStringLiteral("Disconnected");
     update();
     if (!session_) return;
     connect(session_, &Session::frameReady, this, [this](const QImage &image) { frame_ = image; updateGeometry(); update(); });
+    connect(session_, &Session::stateChanged, this, [this](Session::State state) {
+        if (state == Session::State::Connecting) statusText_ = QStringLiteral("Connecting…");
+        else if (state == Session::State::Connected) statusText_ = QStringLiteral("Waiting for display…");
+        else { statusText_ = QStringLiteral("Disconnected"); frame_ = {}; }
+        update();
+    });
+    connect(session_, &Session::errorOccurred, this, [this](const QString &message) {
+        statusText_ = message;
+        update();
+    });
     connect(session_, &Session::cursorChanged, this, [this](const QImage &image, int hotX, int hotY) {
         if (image.isNull()) unsetCursor();
         else setCursor(QCursor(QPixmap::fromImage(image), hotX, hotY));
@@ -29,6 +40,7 @@ void Widget::paintEvent(QPaintEvent *) {
     QPainter painter(this);
     painter.fillRect(rect(), Qt::black);
     if (!frame_.isNull()) painter.drawImage(fittedRect(frame_.size(), size()), frame_);
+    else { painter.setPen(Qt::white); painter.drawText(rect(), Qt::AlignCenter | Qt::TextWordWrap, statusText_); }
 }
 int Widget::buttonMask(Qt::MouseButtons buttons) {
     return ((buttons & Qt::LeftButton) ? 1 : 0) | ((buttons & Qt::MiddleButton) ? 2 : 0) | ((buttons & Qt::RightButton) ? 4 : 0);

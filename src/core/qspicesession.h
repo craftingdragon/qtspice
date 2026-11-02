@@ -10,7 +10,7 @@ struct QtSpice::Session::Worker {
     explicit Worker(Session *owner);
     ~Worker();
     void post(std::function<void()> task);
-    void connectToHost(const QString &host, quint16 port);
+    void connectToConfig(const ConnectionConfig &config);
     void disconnect();
     static void onChannelNew(SpiceSession *, SpiceChannel *, gpointer);
     static void onChannelDestroy(SpiceSession *, SpiceChannel *, gpointer);
@@ -22,6 +22,7 @@ struct QtSpice::Session::Worker {
     SpiceSession *session = nullptr;
     SpiceDisplayChannel *display = nullptr;
     SpiceInputsChannel *inputs = nullptr;
+    bool inputsReady = false;
     SpiceCursorChannel *cursor = nullptr;
     SpiceMainChannel *main = nullptr;
     int displayId = 0;

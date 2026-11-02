@@ -16,6 +16,9 @@ The simple viewer connects to a direct SPICE endpoint:
 
 ```sh
 ./build/simple-viewer spice://localhost:5900
+./build/simple-viewer /path/to/console.vv
+./build/simple-viewer --snapshot /tmp/frame.png /path/to/console.vv
 ```
 
-Display and input are implemented for the primary monitor with software rendering. Keyboard mapping currently covers standard US keys; live server validation and broader layouts remain to be done. Connection files and the Proxmox viewer follow in later milestones.
+Display and input are implemented for the primary monitor with software rendering. A Proxmox `.vv` connection rendered a Rocky Linux login screen in live validation. Keyboard mapping currently covers standard US keys; broader layouts remain to be done. The Proxmox browser example follows in the next milestone.
+The snapshot option saves the latest frame after two seconds and exits with a nonzero status if no frame arrived.

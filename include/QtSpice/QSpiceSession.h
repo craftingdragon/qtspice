@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QString>
 #include <QImage>
+#include <QtSpice/QSpiceConnection.h>
 #include <memory>
 
 namespace QtSpice {
@@ -17,6 +18,7 @@ public:
     ~Session() override;
     State state() const noexcept;
     void connectToHost(const QString &host, quint16 port);
+    void connectToConfig(const ConnectionConfig &config);
     void disconnectFromHost();
     void sendKey(quint32 scancode, bool pressed);
     void sendPointer(int x, int y, int buttons);

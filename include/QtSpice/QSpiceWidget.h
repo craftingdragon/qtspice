@@ -2,6 +2,7 @@
 #include <QWidget>
 #include <QImage>
 #include <QPointer>
+#include <QString>
 
 namespace QtSpice {
 class Session;
@@ -22,6 +23,7 @@ protected:
 private:
     QPointer<Session> session_;
     QImage frame_;
+    QString statusText_ = QStringLiteral("Disconnected");
     static int buttonMask(Qt::MouseButtons);
     static int spiceButton(Qt::MouseButton);
 };

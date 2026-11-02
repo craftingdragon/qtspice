@@ -56,6 +56,10 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
         g_signal_connect(channel, "cursor-set", G_CALLBACK(onCursorSet), self);
         g_signal_connect(channel, "cursor-hide", G_CALLBACK(onCursorHide), self);
     }
+    if ((type == SPICE_CHANNEL_DISPLAY && id == 0) || type == SPICE_CHANNEL_INPUTS ||
+        (type == SPICE_CHANNEL_CURSOR && id == 0)) {
+        spice_channel_connect(channel);
+    }
     QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id] { Q_EMIT owner->channelAdded(type, id); }, Qt::QueuedConnection);
 }
 
@@ -64,7 +68,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
     if (channel == SPICE_CHANNEL(self->display)) self->display = nullptr;
-    if (channel == SPICE_CHANNEL(self->inputs)) self->inputs = nullptr;
+    if (channel == SPICE_CHANNEL(self->inputs)) { self->inputs = nullptr; self->inputsReady = false; }
     if (channel == SPICE_CHANNEL(self->cursor)) self->cursor = nullptr;
     if (channel == SPICE_CHANNEL(self->main)) self->main = nullptr;
     g_signal_handlers_disconnect_by_data(channel, self);
@@ -101,31 +105,53 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
     auto *self = static_cast<Worker *>(data);
     int type = 0;
     g_object_get(channel, "channel-type", &type, nullptr);
+    if (channel == SPICE_CHANNEL(self->inputs)) {
+        if (event == SPICE_CHANNEL_OPENED) self->inputsReady = true;
+        else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) self->inputsReady = false;
+    }
     if (type != SPICE_CHANNEL_MAIN) return;
     if (event == SPICE_CHANNEL_OPENED) {
         QMetaObject::invokeMethod(self->owner, [owner = self->owner] { owner->setState(State::Connected); }, Qt::QueuedConnection);
-    } else if (event >= SPICE_CHANNEL_ERROR_CONNECT) {
+    } else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) {
+        self->inputsReady = false;
         const GError *error = spice_channel_get_error(channel);
-        QString message = error ? QString::fromUtf8(error->message) : QStringLiteral("SPICE connection failed");
+        QString message = error ? QString::fromUtf8(error->message) : QStringLiteral("SPICE connection closed");
         QMetaObject::invokeMethod(self->owner, [owner = self->owner, message] {
-            Q_EMIT owner->errorOccurred(message);
+            const bool unexpected = owner->state() != State::Disconnected;
             owner->setState(State::Disconnected);
+            if (unexpected) Q_EMIT owner->errorOccurred(message);
         }, Qt::QueuedConnection);
     }
 }
 
-void Session::Worker::connectToHost(const QString &host, quint16 port) {
+void Session::Worker::connectToConfig(const ConnectionConfig &config) {
     disconnect();
     session = spice_session_new();
-    QByteArray name = host.toUtf8();
-    QByteArray service = QByteArray::number(port);
-    g_object_set(session, "host", name.constData(), "port", service.constData(), nullptr);
+    const QByteArray name = config.host.toUtf8();
+    const QByteArray port = config.port ? QByteArray::number(config.port) : QByteArray();
+    const QByteArray tlsPort = config.tlsPort ? QByteArray::number(config.tlsPort) : QByteArray();
+    const QByteArray proxy = config.proxy.toUtf8();
+    const QByteArray password = config.password.toUtf8();
+    const QByteArray subject = config.certificateSubject.toUtf8();
+    g_object_set(session, "host", name.constData(), "port", port.isEmpty() ? nullptr : port.constData(),
+                 "tls-port", tlsPort.isEmpty() ? nullptr : tlsPort.constData(),
+                 "proxy", proxy.isEmpty() ? nullptr : proxy.constData(),
+                 "password", password.isEmpty() ? nullptr : password.constData(),
+                 "cert-subject", subject.isEmpty() ? nullptr : subject.constData(), nullptr);
+    if (!config.caPem.isEmpty()) {
+        GByteArray *ca = g_byte_array_sized_new(guint(config.caPem.size()));
+        g_byte_array_append(ca, reinterpret_cast<const guint8 *>(config.caPem.constData()), guint(config.caPem.size()));
+        g_object_set(session, "ca", ca, nullptr);
+        g_byte_array_unref(ca);
+    }
+    if (!config.certificateSubject.isEmpty())
+        g_object_set(session, "verify", SPICE_SESSION_VERIFY_SUBJECT, nullptr);
     g_signal_connect(session, "channel-new", G_CALLBACK(onChannelNew), this);
     g_signal_connect(session, "channel-destroy", G_CALLBACK(onChannelDestroy), this);
     if (!spice_session_connect(session)) {
         QMetaObject::invokeMethod(owner, [owner = owner] {
-            Q_EMIT owner->errorOccurred(QStringLiteral("Could not start SPICE connection"));
             owner->setState(State::Disconnected);
+            Q_EMIT owner->errorOccurred(QStringLiteral("Could not start SPICE connection"));
         }, Qt::QueuedConnection);
     }
 }
@@ -138,6 +164,7 @@ void Session::Worker::disconnect() {
     session = nullptr;
     display = nullptr;
     inputs = nullptr;
+    inputsReady = false;
     cursor = nullptr;
     main = nullptr;
     hasPointer = false;
@@ -154,12 +181,19 @@ void Session::setState(State state) {
 }
 
 void Session::connectToHost(const QString &host, quint16 port) {
-    if (host.trimmed().isEmpty() || port == 0) {
+    ConnectionConfig config;
+    config.host = host;
+    config.port = port;
+    connectToConfig(config);
+}
+
+void Session::connectToConfig(const ConnectionConfig &config) {
+    if (config.host.trimmed().isEmpty() || (!config.port && !config.tlsPort)) {
         Q_EMIT errorOccurred(QStringLiteral("Host and nonzero port are required"));
         return;
     }
     setState(State::Connecting);
-    worker_->post([worker = worker_.get(), host, port] { worker->connectToHost(host, port); });
+    worker_->post([worker = worker_.get(), config] { worker->connectToConfig(config); });
 }
 
 void Session::disconnectFromHost() {
@@ -170,7 +204,7 @@ void Session::disconnectFromHost() {
 void Session::sendKey(quint32 scancode, bool pressed) {
     if (!scancode) return;
     worker_->post([w = worker_.get(), scancode, pressed] {
-        if (!w->inputs) return;
+        if (!w->inputsReady || !w->inputs) return;
         if (pressed) spice_inputs_channel_key_press(w->inputs, scancode);
         else spice_inputs_channel_key_release(w->inputs, scancode);
     });
@@ -178,7 +212,7 @@ void Session::sendKey(quint32 scancode, bool pressed) {
 
 void Session::sendPointer(int x, int y, int buttons) {
     worker_->post([w = worker_.get(), x, y, buttons] {
-        if (!w->inputs) return;
+        if (!w->inputsReady || !w->inputs) return;
         int mode = SPICE_MOUSE_MODE_CLIENT;
         if (w->main) g_object_get(w->main, "mouse-mode", &mode, nullptr);
         if (mode == SPICE_MOUSE_MODE_SERVER) {
@@ -194,7 +228,7 @@ void Session::sendPointer(int x, int y, int buttons) {
 
 void Session::sendButton(int button, bool pressed, int buttons) {
     worker_->post([w = worker_.get(), button, pressed, buttons] {
-        if (!w->inputs) return;
+        if (!w->inputsReady || !w->inputs) return;
         if (pressed) spice_inputs_channel_button_press(w->inputs, button, buttons);
         else spice_inputs_channel_button_release(w->inputs, button, buttons);
     });
