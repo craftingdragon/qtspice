@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QString>
 #include <QImage>
+#include <QSize>
 #include <QtSpice/QSpiceConnection.h>
 #include <memory>
 
@@ -31,6 +32,7 @@ public:
     void sendButton(int button, bool pressed, int buttons);
     void releaseAllInputs();
     void setHostClipboardText(const QString &text);
+    void setDesiredDisplaySize(QSize size);
 
 Q_SIGNALS:
     void stateChanged(QtSpice::Session::State state);

@@ -20,6 +20,18 @@ Widget::Widget(QWidget *parent) : QWidget(parent) {
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
     clipboardBridge_ = std::make_unique<ClipboardBridge>();
+    resizeTimer_.setSingleShot(true);
+    resizeTimer_.setInterval(250);
+    connect(&resizeTimer_, &QTimer::timeout, this, [this] {
+        if (!autoResizeGuest_ || !isVisible() || !session_) return;
+        const QSize requested = size();
+        if (requested.width() < 320 || requested.height() < 200 || requested.width() > 8192 ||
+            requested.height() > 8192 || qint64(requested.width()) * requested.height() > 32 * 1024 * 1024 ||
+            requested == lastRequestedSize_) return;
+        lastRequestedSize_ = requested;
+        Q_EMIT guestResizeRequested(requested);
+        session_->setDesiredDisplaySize(requested);
+    });
 #ifdef QTSPICE_WAYLAND_POINTER_LOCK
     if (QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))) {
         waylandLock_ = std::make_unique<WaylandPointerLock>(
@@ -45,6 +57,9 @@ Widget::Widget(QWidget *parent) : QWidget(parent) {
 }
 Widget::~Widget() { releaseMouseGrab(); }
 void Widget::setSession(Session *session) {
+    resizeTimer_.stop();
+    if (session_ && session_ != session) session_->setDesiredDisplaySize({});
+    lastRequestedSize_ = {};
     clipboardBridge_->setActive(false);
     if (session_) session_->releaseAllInputs();
     releaseMouseGrab();
@@ -60,6 +75,7 @@ void Widget::setSession(Session *session) {
     statusText_ = QStringLiteral("Disconnected");
     update();
     if (!session_) return;
+    scheduleGuestResize();
     connect(clipboardBridge_.get(), &ClipboardBridge::hostTextChanged, session_, &Session::setHostClipboardText);
     connect(session_, &Session::guestClipboardText, clipboardBridge_.get(), &ClipboardBridge::applyGuestText);
     connect(session_, &Session::clipboardReadyChanged, clipboardBridge_.get(), &ClipboardBridge::setActive);
@@ -92,6 +108,19 @@ void Widget::setSession(Session *session) {
     connect(session_, &Session::inputReadyChanged, this, [this](bool ready) {
         if (!ready) releaseMouseGrab();
     });
+}
+bool Widget::autoResizeGuest() const noexcept { return autoResizeGuest_; }
+void Widget::setAutoResizeGuest(bool enabled) {
+    if (autoResizeGuest_ == enabled) return;
+    autoResizeGuest_ = enabled;
+    resizeTimer_.stop();
+    lastRequestedSize_ = {};
+    if (!enabled && session_) session_->setDesiredDisplaySize({});
+    if (enabled) scheduleGuestResize();
+    Q_EMIT autoResizeGuestChanged(enabled);
+}
+void Widget::scheduleGuestResize() {
+    if (autoResizeGuest_ && session_ && isVisible()) resizeTimer_.start();
 }
 void Widget::releaseMouseGrab() {
 #ifdef QTSPICE_WAYLAND_POINTER_LOCK
@@ -160,18 +189,14 @@ void Widget::mousePressEvent(QMouseEvent *event) {
     }
 #endif
     if (session_ && session_->inputReady() && session_->mouseMode() == Session::MouseMode::Server &&
-        QGuiApplication::platformName() == QStringLiteral("xcb") && !mouseGrabbed_) {
+        QGuiApplication::platformName() == QStringLiteral("xcb") &&
+        qEnvironmentVariable("XDG_SESSION_TYPE") != QStringLiteral("wayland") && !mouseGrabbed_) {
         grabMouse();
         mouseGrabbed_ = QWidget::mouseGrabber() == this;
         if (!mouseGrabbed_) return;
         justGrabbed = true;
         setCursor(Qt::BlankCursor);
-        if (qEnvironmentVariable("XDG_SESSION_TYPE") == QStringLiteral("wayland")) {
-            lastMouse_ = event->position().toPoint();
-            hasLastMouse_ = true;
-        } else {
-            QCursor::setPos(mapToGlobal(rect().center()));
-        }
+        QCursor::setPos(mapToGlobal(rect().center()));
     }
     if (!justGrabbed) mouseMoveEvent(event);
     if (session_ && spiceButton(event->button()))
@@ -213,8 +238,19 @@ void Widget::focusOutEvent(QFocusEvent *event) {
     QWidget::focusOutEvent(event);
 }
 void Widget::hideEvent(QHideEvent *event) {
+    resizeTimer_.stop();
+    if (session_ && autoResizeGuest_) session_->setDesiredDisplaySize({});
+    lastRequestedSize_ = {};
     if (session_) session_->releaseAllInputs();
     releaseMouseGrab();
     QWidget::hideEvent(event);
+}
+void Widget::showEvent(QShowEvent *event) {
+    QWidget::showEvent(event);
+    scheduleGuestResize();
+}
+void Widget::resizeEvent(QResizeEvent *event) {
+    QWidget::resizeEvent(event);
+    scheduleGuestResize();
 }
 }

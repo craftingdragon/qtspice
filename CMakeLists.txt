@@ -53,6 +53,12 @@ target_link_libraries(proxmox-viewer PRIVATE QtSpice Qt6::WebEngineWidgets Qt6::
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(viewersettings_test tests/viewersettings_test.cpp)
+  target_link_libraries(viewersettings_test PRIVATE Qt6::Core Qt6::Test)
+  add_test(NAME viewersettings_test COMMAND viewersettings_test)
+  add_executable(qspicewidget_test tests/qspicewidget_test.cpp)
+  target_link_libraries(qspicewidget_test PRIVATE QtSpice Qt6::Test)
+  add_test(NAME qspicewidget_test COMMAND qspicewidget_test)
   add_executable(clipboardbridge_test tests/clipboardbridge_test.cpp)
   target_include_directories(clipboardbridge_test PRIVATE src/widgets)
   target_link_libraries(clipboardbridge_test PRIVATE QtSpice Qt6::Test)

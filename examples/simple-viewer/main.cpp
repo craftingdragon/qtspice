@@ -1,5 +1,6 @@
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceWidget.h>
+#include "../viewersettings.h"
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QMessageBox>
@@ -7,10 +8,13 @@
 #include <QFile>
 #include <QDebug>
 #include <QTimer>
+#include <QMainWindow>
+#include <QMenuBar>
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("simple-viewer"));
+    QCoreApplication::setOrganizationName(QStringLiteral("QtSpice"));
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("QtSpice direct SPICE viewer"));
     parser.addHelpOption();
@@ -35,8 +39,18 @@ int main(int argc, char **argv) {
         config.port = quint16(url.port());
     }
     QtSpice::Session session;
-    QtSpice::Widget widget;
-    widget.setSession(&session);
+    QMainWindow window;
+    auto *widget = new QtSpice::Widget(&window);
+    widget->setSession(&session);
+    window.setCentralWidget(widget);
+    auto *resizeAction = window.menuBar()->addMenu(QStringLiteral("View"))->addAction(QStringLiteral("Auto Resize Guest"));
+    resizeAction->setCheckable(true);
+    resizeAction->setChecked(ViewerSettings::autoResizeGuest());
+    widget->setAutoResizeGuest(resizeAction->isChecked());
+    QObject::connect(resizeAction, &QAction::toggled, widget, [widget](bool enabled) {
+        widget->setAutoResizeGuest(enabled);
+        ViewerSettings::setAutoResizeGuest(enabled);
+    });
     if (parser.isSet(snapshot)) {
         auto latest = std::make_shared<QImage>();
         QObject::connect(&session, &QtSpice::Session::frameReady, &app, [latest](const QImage &image) {
@@ -51,12 +65,12 @@ int main(int argc, char **argv) {
             }
         });
     }
-    QObject::connect(&session, &QtSpice::Session::errorOccurred, &widget, [&widget](const QString &message) {
+    QObject::connect(&session, &QtSpice::Session::errorOccurred, widget, [widget](const QString &message) {
         qWarning().noquote() << "SPICE connection:" << message;
-        QMessageBox::warning(&widget, QStringLiteral("SPICE connection"), message);
+        QMessageBox::warning(widget, QStringLiteral("SPICE connection"), message);
     });
-    widget.resize(1024, 768);
-    widget.show();
+    window.resize(1024, 768);
+    window.show();
     session.connectToConfig(config);
     return app.exec();
 }

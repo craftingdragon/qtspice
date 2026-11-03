@@ -23,6 +23,9 @@ struct QtSpice::Session::Worker {
     bool inputsReady = false;
     SpiceCursorChannel *cursor = nullptr;
     SpiceMainChannel *main = nullptr;
+    QSize desiredDisplaySize;
+    QSize sentDisplaySize;
+    bool mainOpened = false;
     bool clipboardReady = false;
     bool hostOwnsClipboard = false;
     bool guestClipboardRequestPending = false;
@@ -35,6 +38,7 @@ struct QtSpice::Session::Worker {
     QSet<int> pressedButtons;
     int buttonState = 0;
     void releaseInputs();
+    void sendDisplaySize();
     static void onMouseUpdate(SpiceMainChannel *, gpointer);
     static void onAgentUpdate(SpiceMainChannel *, gpointer);
     static gboolean onClipboardGrab(SpiceMainChannel *, guint, gpointer, guint, gpointer);

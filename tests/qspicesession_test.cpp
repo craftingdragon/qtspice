@@ -1,10 +1,17 @@
 #include <QtSpice/QSpiceSession.h>
+#include "../src/core/clipboardcapability.h"
 #include <QSignalSpy>
 #include <QtTest>
 
 class SessionTest : public QObject {
     Q_OBJECT
 private slots:
+    void clipboardRequiresByDemandCapability() {
+        QVERIFY(!QtSpice::clipboardByDemandReady(false, false));
+        QVERIFY(!QtSpice::clipboardByDemandReady(true, false));
+        QVERIFY(!QtSpice::clipboardByDemandReady(false, true));
+        QVERIFY(QtSpice::clipboardByDemandReady(true, true));
+    }
     void initialState() {
         QtSpice::Session session;
         QCOMPARE(session.state(), QtSpice::Session::State::Disconnected);

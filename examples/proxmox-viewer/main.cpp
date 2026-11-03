@@ -1,5 +1,6 @@
 #include "certificatestore.h"
 #include "downloadpolicy.h"
+#include "../viewersettings.h"
 #include <QtSpice/QSpiceConnection.h>
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceWidget.h>
@@ -16,6 +17,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
+#include <QMenuBar>
 #include <QWebEngineCertificateError>
 #include <QWebEngineDownloadRequest>
 #include <QWebEnginePage>
@@ -30,6 +32,14 @@ public:
         auto *widget = new QtSpice::Widget(this);
         widget->setSession(&session_);
         setCentralWidget(widget);
+        auto *resizeAction = menuBar()->addMenu(QStringLiteral("View"))->addAction(QStringLiteral("Auto Resize Guest"));
+        resizeAction->setCheckable(true);
+        resizeAction->setChecked(ViewerSettings::autoResizeGuest());
+        widget->setAutoResizeGuest(resizeAction->isChecked());
+        connect(resizeAction, &QAction::toggled, widget, [widget](bool enabled) {
+            widget->setAutoResizeGuest(enabled);
+            ViewerSettings::setAutoResizeGuest(enabled);
+        });
         connect(&session_, &QtSpice::Session::errorOccurred, this, [this](const QString &message) { statusBar()->showMessage(message); });
         connect(&session_, &QtSpice::Session::stateChanged, this, [this](QtSpice::Session::State state) {
             if (state == QtSpice::Session::State::Connected)
@@ -45,7 +55,7 @@ public:
         connect(&session_, &QtSpice::Session::clipboardReadyChanged, this, [this](bool ready) {
             if (session_.state() == QtSpice::Session::State::Connected)
                 statusBar()->showMessage(ready ? QStringLiteral("Connected · Clipboard ready")
-                    : QStringLiteral("Connected · Clipboard unavailable: guest agent disconnected"));
+                    : QStringLiteral("Connected · Clipboard unavailable: guest agent disconnected or lacks support"));
         });
         resize(1100, 800);
         show();
