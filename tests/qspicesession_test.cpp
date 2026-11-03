@@ -43,6 +43,9 @@ private slots:
         QtSpice::Session session;
         QCOMPARE(session.mouseMode(), QtSpice::Session::MouseMode::Client);
         QVERIFY(!session.inputReady());
+        QVERIFY(!session.clipboardReady());
+        session.setHostClipboardText(QStringLiteral("test"));
+        session.setHostClipboardText(QString(4 * 1024 * 1024 + 1, QLatin1Char('x')));
         session.sendKey(0x1e, true);
         session.sendKey(0x1e, false);
         session.sendPointer(10, 20, 0);

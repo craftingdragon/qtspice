@@ -9,6 +9,7 @@
 namespace QtSpice {
 class Session;
 class WaylandPointerLock;
+class ClipboardBridge;
 class Widget final : public QWidget {
     Q_OBJECT
 public:
@@ -35,6 +36,7 @@ private:
     bool hasLastMouse_ = false;
     QPoint lastMouse_;
     std::unique_ptr<WaylandPointerLock> waylandLock_;
+    std::unique_ptr<ClipboardBridge> clipboardBridge_;
     double relativeRemainderX_ = 0;
     double relativeRemainderY_ = 0;
     void releaseMouseGrab();

@@ -4,8 +4,11 @@
 #include <QMetaObject>
 #include <QLoggingCategory>
 #include <utility>
+#include <spice/vd_agent.h>
 
-Q_LOGGING_CATEGORY(inputLog, "qtspice.input")
+namespace { constexpr qsizetype maxClipboardBytes = 4 * 1024 * 1024; }
+
+Q_LOGGING_CATEGORY(inputLog, "qtspice.input", QtWarningMsg)
 
 namespace QtSpice {
 
@@ -29,6 +32,14 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
     if (type == SPICE_CHANNEL_MAIN) {
         self->main = SPICE_MAIN_CHANNEL(channel);
         g_signal_connect(channel, "main-mouse-update", G_CALLBACK(onMouseUpdate), self);
+        g_signal_connect(channel, "main-agent-update", G_CALLBACK(onAgentUpdate), self);
+        g_signal_connect(channel, "notify::agent-connected", G_CALLBACK(+[](GObject *object, GParamSpec *, gpointer data) {
+            Worker::onAgentUpdate(SPICE_MAIN_CHANNEL(object), data);
+        }), self);
+        g_signal_connect(channel, "main-clipboard-selection-grab", G_CALLBACK(onClipboardGrab), self);
+        g_signal_connect(channel, "main-clipboard-selection", G_CALLBACK(onClipboardData), self);
+        g_signal_connect(channel, "main-clipboard-selection-release", G_CALLBACK(onClipboardRelease), self);
+        g_signal_connect(channel, "main-clipboard-selection-request", G_CALLBACK(onClipboardRequest), self);
     } else if (type == SPICE_CHANNEL_DISPLAY && id == 0) {
         self->display = SPICE_DISPLAY_CHANNEL(channel);
         self->displayId = id;
@@ -64,7 +75,13 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
         QMetaObject::invokeMethod(self->owner, [owner = self->owner] { owner->setInputReady(false); }, Qt::QueuedConnection);
     }
     if (channel == SPICE_CHANNEL(self->cursor)) self->cursor = nullptr;
-    if (channel == SPICE_CHANNEL(self->main)) self->main = nullptr;
+    if (channel == SPICE_CHANNEL(self->main)) {
+        self->main = nullptr;
+        self->clipboardReady = false;
+        self->hostOwnsClipboard = false;
+        self->guestClipboardRequestPending = false;
+        QMetaObject::invokeMethod(self->owner, [owner = self->owner] { owner->setClipboardReady(false); }, Qt::QueuedConnection);
+    }
     g_signal_handlers_disconnect_by_data(channel, self);
     QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id] { Q_EMIT owner->channelRemoved(type, id); }, Qt::QueuedConnection);
 }
@@ -106,6 +123,68 @@ void Session::Worker::onMouseUpdate(SpiceMainChannel *channel, gpointer data) {
     QMetaObject::invokeMethod(self->owner, [owner = self->owner, value] { owner->setMouseMode(value); }, Qt::QueuedConnection);
 }
 
+void Session::Worker::onAgentUpdate(SpiceMainChannel *channel, gpointer data) {
+    auto *self = static_cast<Worker *>(data);
+    gboolean connected = FALSE;
+    g_object_get(channel, "agent-connected", &connected, nullptr);
+    // The agent connection, rather than its advertised optional capabilities, governs
+    // clipboard availability. spice-gtk also handles clipboard signals without a cap gate.
+    const bool ready = connected;
+    if (self->clipboardReady == ready) return;
+    self->clipboardReady = ready;
+    self->hostOwnsClipboard = false;
+    self->guestClipboardRequestPending = false;
+    if (ready && !self->hostClipboard.isEmpty()) {
+        guint32 type = VD_AGENT_CLIPBOARD_UTF8_TEXT;
+        spice_main_channel_clipboard_selection_grab(channel, VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD, &type, 1);
+        self->hostOwnsClipboard = true;
+    }
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, ready] { owner->setClipboardReady(ready); }, Qt::QueuedConnection);
+}
+
+gboolean Session::Worker::onClipboardGrab(SpiceMainChannel *channel, guint selection, gpointer types, guint count, gpointer data) {
+    auto *self = static_cast<Worker *>(data);
+    if (!self->clipboardReady || selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD || !types) return FALSE;
+    const auto *offered = static_cast<const guint32 *>(types);
+    for (guint i = 0; i < count; ++i) {
+        if (offered[i] == VD_AGENT_CLIPBOARD_UTF8_TEXT) {
+            self->hostOwnsClipboard = false;
+            self->guestClipboardRequestPending = true;
+            QMetaObject::invokeMethod(self->owner, [self, channel] {
+                if (self->main == channel && self->clipboardReady && self->guestClipboardRequestPending && !self->hostOwnsClipboard)
+                    spice_main_channel_clipboard_selection_request(channel, VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD,
+                                                                   VD_AGENT_CLIPBOARD_UTF8_TEXT);
+            }, Qt::QueuedConnection);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+void Session::Worker::onClipboardData(SpiceMainChannel *, guint selection, guint type, gpointer bytes, guint size, gpointer data) {
+    auto *self = static_cast<Worker *>(data);
+    if (!self->clipboardReady || !self->guestClipboardRequestPending || self->hostOwnsClipboard ||
+        selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD || type != VD_AGENT_CLIPBOARD_UTF8_TEXT ||
+        size > maxClipboardBytes || (size && !bytes)) return;
+    self->guestClipboardRequestPending = false;
+    const QString text = QString::fromUtf8(static_cast<const char *>(bytes), size);
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, text] { Q_EMIT owner->guestClipboardText(text); }, Qt::QueuedConnection);
+}
+
+void Session::Worker::onClipboardRelease(SpiceMainChannel *, guint selection, gpointer data) {
+    auto *self = static_cast<Worker *>(data);
+    if (selection == VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD) self->guestClipboardRequestPending = false;
+}
+
+gboolean Session::Worker::onClipboardRequest(SpiceMainChannel *channel, guint selection, guint type, gpointer data) {
+    auto *self = static_cast<Worker *>(data);
+    if (!self->clipboardReady || !self->hostOwnsClipboard || selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD ||
+        type != VD_AGENT_CLIPBOARD_UTF8_TEXT) return FALSE;
+    spice_main_channel_clipboard_selection_notify(channel, selection, type,
+        reinterpret_cast<const guchar *>(self->hostClipboard.constData()), size_t(self->hostClipboard.size()));
+    return TRUE;
+}
+
 void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent event, gpointer data) {
     auto *self = static_cast<Worker *>(data);
     int type = 0;
@@ -124,6 +203,7 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
     if (type != SPICE_CHANNEL_MAIN) return;
     if (event == SPICE_CHANNEL_OPENED) {
         onMouseUpdate(SPICE_MAIN_CHANNEL(channel), self);
+        onAgentUpdate(SPICE_MAIN_CHANNEL(channel), self);
         QMetaObject::invokeMethod(self->owner, [owner = self->owner] { owner->setState(State::Connected); }, Qt::QueuedConnection);
     } else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) {
         self->inputsReady = false;
@@ -185,11 +265,16 @@ void Session::Worker::disconnect() {
     inputsReady = false;
     cursor = nullptr;
     main = nullptr;
+    clipboardReady = false;
+    hostOwnsClipboard = false;
+    guestClipboardRequestPending = false;
+    hostClipboard.clear();
     hasPointer = false;
     pressedKeys.clear();
     pressedButtons.clear();
     buttonState = 0;
     owner->setInputReady(false);
+    owner->setClipboardReady(false);
     owner->setMouseMode(MouseMode::Client);
 }
 
@@ -213,6 +298,7 @@ Session::~Session() = default;
 Session::State Session::state() const noexcept { return state_; }
 Session::MouseMode Session::mouseMode() const noexcept { return mouseMode_; }
 bool Session::inputReady() const noexcept { return inputReady_; }
+bool Session::clipboardReady() const noexcept { return clipboardReady_; }
 
 void Session::setState(State state) {
     if (state_ == state) return;
@@ -228,6 +314,11 @@ void Session::setInputReady(bool ready) {
     if (inputReady_ == ready) return;
     inputReady_ = ready;
     Q_EMIT inputReadyChanged(ready);
+}
+void Session::setClipboardReady(bool ready) {
+    if (clipboardReady_ == ready) return;
+    clipboardReady_ = ready;
+    Q_EMIT clipboardReadyChanged(ready);
 }
 
 void Session::connectToHost(const QString &host, quint16 port) {
@@ -308,5 +399,25 @@ void Session::sendButton(int button, bool pressed, int buttons) {
 }
 
 void Session::releaseAllInputs() { worker_->post([w = worker_.get()] { w->releaseInputs(); }); }
+
+void Session::setHostClipboardText(const QString &text) {
+    const QByteArray utf8 = text.toUtf8();
+    worker_->post([w = worker_.get(), utf8] {
+        const bool valid = utf8.size() <= maxClipboardBytes;
+        if (valid && w->hostClipboard == utf8 && w->hostOwnsClipboard) return;
+        w->hostClipboard = valid ? utf8 : QByteArray();
+        w->guestClipboardRequestPending = false;
+        if (!w->clipboardReady || !w->main) return;
+        if (!valid || utf8.isEmpty()) {
+            if (w->hostOwnsClipboard)
+                spice_main_channel_clipboard_selection_release(w->main, VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD);
+            w->hostOwnsClipboard = false;
+        } else {
+            guint32 type = VD_AGENT_CLIPBOARD_UTF8_TEXT;
+            spice_main_channel_clipboard_selection_grab(w->main, VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD, &type, 1);
+            w->hostOwnsClipboard = true;
+        }
+    });
+}
 
 } // namespace QtSpice

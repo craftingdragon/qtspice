@@ -42,6 +42,11 @@ public:
                 statusBar()->showMessage(QStringLiteral("Relative mouse: click console to capture; Ctrl+Alt+G releases it"));
             else statusBar()->showMessage(QStringLiteral("Absolute mouse mode"));
         });
+        connect(&session_, &QtSpice::Session::clipboardReadyChanged, this, [this](bool ready) {
+            if (session_.state() == QtSpice::Session::State::Connected)
+                statusBar()->showMessage(ready ? QStringLiteral("Connected · Clipboard ready")
+                    : QStringLiteral("Connected · Clipboard unavailable: guest agent disconnected"));
+        });
         resize(1100, 800);
         show();
         session_.connectToConfig(config);

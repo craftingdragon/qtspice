@@ -21,6 +21,7 @@ public:
     State state() const noexcept;
     MouseMode mouseMode() const noexcept;
     bool inputReady() const noexcept;
+    bool clipboardReady() const noexcept;
     void connectToHost(const QString &host, quint16 port);
     void connectToConfig(const ConnectionConfig &config);
     void disconnectFromHost();
@@ -29,6 +30,7 @@ public:
     void sendRelativePointer(int dx, int dy, int buttons);
     void sendButton(int button, bool pressed, int buttons);
     void releaseAllInputs();
+    void setHostClipboardText(const QString &text);
 
 Q_SIGNALS:
     void stateChanged(QtSpice::Session::State state);
@@ -39,6 +41,8 @@ Q_SIGNALS:
     void cursorChanged(const QImage &cursor, int hotX, int hotY);
     void mouseModeChanged(QtSpice::Session::MouseMode mode);
     void inputReadyChanged(bool ready);
+    void clipboardReadyChanged(bool ready);
+    void guestClipboardText(const QString &text);
 
 private:
     struct Worker;
@@ -46,9 +50,11 @@ private:
     State state_ = State::Disconnected;
     MouseMode mouseMode_ = MouseMode::Client;
     bool inputReady_ = false;
+    bool clipboardReady_ = false;
     void setState(State state);
     void setMouseMode(MouseMode mode);
     void setInputReady(bool ready);
+    void setClipboardReady(bool ready);
 };
 
 } // namespace QtSpice

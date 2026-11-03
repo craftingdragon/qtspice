@@ -21,6 +21,7 @@ The simple viewer connects to a direct SPICE endpoint:
 ```
 
 Display and input are implemented for the primary monitor with software rendering. A Proxmox `.vv` connection rendered a Rocky Linux login screen in live validation. Keyboard and client mode pointer input have been validated with Proxmox. Keyboard mapping currently covers standard US keys; broader layouts remain to be done.
+When the guest agent supports clipboard sharing, the viewers synchronize plain UTF-8 text with the host clipboard in both directions. Transfers larger than 4 MiB, images, files, and the primary selection are not supported. The host clipboard is preserved when the console disconnects.
 In server mouse mode, click the display to capture the pointer and press Ctrl+Alt+G to release it. Native Wayland capture uses the compositor's relative pointer and pointer constraints protocols. A compositor must advertise both protocols. The Wayland build uses Qt's GuiPrivate platform interface to obtain the window surface, so it must be rebuilt after a Qt version change.
 The snapshot option saves the latest frame after two seconds and exits with a nonzero status if no frame arrived.
 

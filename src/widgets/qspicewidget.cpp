@@ -1,6 +1,7 @@
 #include <QtSpice/QSpiceWidget.h>
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceDisplay.h>
+#include "clipboardbridge.h"
 #include <QPainter>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -18,6 +19,7 @@ namespace QtSpice {
 Widget::Widget(QWidget *parent) : QWidget(parent) {
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
+    clipboardBridge_ = std::make_unique<ClipboardBridge>();
 #ifdef QTSPICE_WAYLAND_POINTER_LOCK
     if (QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))) {
         waylandLock_ = std::make_unique<WaylandPointerLock>(
@@ -43,16 +45,25 @@ Widget::Widget(QWidget *parent) : QWidget(parent) {
 }
 Widget::~Widget() { releaseMouseGrab(); }
 void Widget::setSession(Session *session) {
+    clipboardBridge_->setActive(false);
     if (session_) session_->releaseAllInputs();
     releaseMouseGrab();
     guestCursor_ = QCursor();
     unsetCursor();
-    if (session_) disconnect(session_, nullptr, this, nullptr);
+    if (session_) {
+        disconnect(session_, nullptr, this, nullptr);
+        disconnect(session_, nullptr, clipboardBridge_.get(), nullptr);
+        disconnect(clipboardBridge_.get(), nullptr, session_, nullptr);
+    }
     session_ = session;
     frame_ = {};
     statusText_ = QStringLiteral("Disconnected");
     update();
     if (!session_) return;
+    connect(clipboardBridge_.get(), &ClipboardBridge::hostTextChanged, session_, &Session::setHostClipboardText);
+    connect(session_, &Session::guestClipboardText, clipboardBridge_.get(), &ClipboardBridge::applyGuestText);
+    connect(session_, &Session::clipboardReadyChanged, clipboardBridge_.get(), &ClipboardBridge::setActive);
+    clipboardBridge_->setActive(session_->clipboardReady());
     connect(session_, &Session::frameReady, this, [this](const QImage &image) { frame_ = image; updateGeometry(); update(); });
     connect(session_, &Session::stateChanged, this, [this](Session::State state) {
         if (state == Session::State::Connecting) statusText_ = QStringLiteral("Connecting…");
