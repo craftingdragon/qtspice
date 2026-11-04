@@ -1,3 +1,4 @@
+#include "../audiomenu.h"
 #include "../spicelogging.h"
 #include "../sharedfolder.h"
 #include <QtSpice/QSpiceSession.h>
@@ -59,6 +60,7 @@ int main(int argc, char **argv) {
     auto *widget = new QtSpice::Widget(&window);
     widget->setSession(&session);
     window.setCentralWidget(widget);
+    AudioMenu::add(window.menuBar(), &session);
     SharedFolder::addMenu(window.menuBar(), &session);
     auto *viewMenu = window.menuBar()->addMenu(QStringLiteral("View"));
     addScalingMenu(viewMenu, widget);

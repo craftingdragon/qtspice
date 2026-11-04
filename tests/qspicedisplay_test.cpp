@@ -1,5 +1,6 @@
 #include <QtSpice/QSpiceDisplay.h>
 #include <QtTest>
+#include "../src/core/displayframe.h"
 
 class DisplayTest : public QObject {
     Q_OBJECT
@@ -10,6 +11,35 @@ private Q_SLOTS:
         QCOMPARE(image.size(), QSize(2, 1));
         pixels[0] = 0;
         QCOMPARE(image.pixel(0, 0), QRgb(0xff112233));
+    }
+    void monitorExcludesStaleRows() {
+        QImage surface(64, 64, QImage::Format_RGB32);
+        surface.fill(Qt::red); // Old pixels retained in the backing allocation.
+        for (int y = 0; y < 60; ++y)
+            for (int x = 0; x < 64; ++x) surface.setPixelColor(x, y, Qt::green);
+        SpiceDisplayPrimary primary{};
+        primary.format = SPICE_SURFACE_FMT_32_xRGB;
+        primary.width = surface.width(); primary.height = surface.height();
+        primary.stride = surface.bytesPerLine(); primary.data = surface.bits();
+        GArray *monitors = g_array_new(FALSE, FALSE, sizeof(SpiceDisplayMonitorConfig));
+        SpiceDisplayMonitorConfig monitor{};
+        monitor.width = 64; monitor.height = 60;
+        g_array_append_val(monitors, monitor);
+        QImage frame = QtSpice::copyMonitor(primary, monitors);
+        QCOMPARE(frame.size(), QSize(64, 60));
+        QCOMPARE(frame.pixelColor(63, 59), QColor(Qt::green));
+        // A monitor update without a new surface must change the visible size.
+        g_array_index(monitors, SpiceDisplayMonitorConfig, 0).height = 58;
+        QCOMPARE(QtSpice::copyMonitor(primary, monitors).size(), QSize(64, 58));
+        auto &config = g_array_index(monitors, SpiceDisplayMonitorConfig, 0);
+        config.x = 4; config.y = 2; config.width = 60; config.height = 58;
+        QCOMPARE(QtSpice::copyMonitor(primary, monitors).size(), QSize(60, 58));
+        config.width = G_MAXUINT;
+        QVERIFY(QtSpice::copyMonitor(primary, monitors).isNull());
+        config.width = 0;
+        QVERIFY(QtSpice::copyMonitor(primary, monitors).isNull());
+        QCOMPARE(QtSpice::copyMonitor(primary, nullptr).size(), surface.size());
+        g_array_unref(monitors);
     }
     void rejectsInvalidSurface() {
         quint32 pixel = 0;

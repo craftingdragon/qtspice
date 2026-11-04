@@ -17,6 +17,16 @@ public:
     enum class MouseMode { Client, Server };
     Q_ENUM(MouseMode)
 
+    enum class AudioState { Disabled, WaitingForStream, Playing, Error };
+    Q_ENUM(AudioState)
+    bool audioEnabled() const;
+    bool audioMuted() const;
+    double audioVolume() const;
+    AudioState audioState() const;
+    QString audioError() const;
+    void setAudioEnabled(bool enabled);
+    void setAudioMuted(bool muted);
+    void setAudioVolume(double volume);
     enum class SharingState { Disabled, WaitingForChannel, Connecting, WaitingForGuest, Active, Error };
     Q_ENUM(SharingState)
     bool setSharedDirectory(const SharedDirectory &directory, QString *error = nullptr);
@@ -43,6 +53,7 @@ public:
     void setDesiredDisplaySize(QSize size);
 
 Q_SIGNALS:
+    void audioChanged();
     void sharingChanged();
     void stateChanged(QtSpice::Session::State state);
     void errorOccurred(const QString &message);

@@ -1,5 +1,6 @@
 #include "qspicesession.h"
 #include "clipboardcapability.h"
+#include "displayframe.h"
 #include <QtSpice/QSpiceDisplay.h>
 
 #include <QMetaObject>
@@ -7,6 +8,8 @@
 #include <QTimer>
 #include <QLoggingCategory>
 #include <utility>
+#include <cmath>
+#include <algorithm>
 #include <spice/vd_agent.h>
 
 namespace { constexpr qsizetype maxClipboardBytes = 4 * 1024 * 1024; }
@@ -16,7 +19,7 @@ Q_LOGGING_CATEGORY(displayLog, "qtspice.display", QtWarningMsg)
 
 namespace QtSpice {
 
-Session::Worker::Worker(Session *o) : owner(o) {}
+Session::Worker::Worker(Session *o) : audio(o), owner(o) {}
 
 Session::Worker::~Worker() {
     disconnect();
@@ -41,6 +44,7 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
         if (self->owner->sharedDirectory_ && self->owner->sharingError_.isEmpty()) spice_channel_connect(channel);
         self->owner->updateSharingState();
     }
+    if (type == SPICE_CHANNEL_PLAYBACK) self->audio.attach(SPICE_PLAYBACK_CHANNEL(channel));
     if (type == SPICE_CHANNEL_MAIN) {
         self->main = SPICE_MAIN_CHANNEL(channel);
         g_signal_connect(channel, "main-mouse-update", G_CALLBACK(onMouseUpdate), self);
@@ -55,6 +59,9 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
     } else if (type == SPICE_CHANNEL_DISPLAY && id == 0) {
         self->display = SPICE_DISPLAY_CHANNEL(channel);
         self->displayId = id;
+        g_signal_connect(channel, "notify::monitors", G_CALLBACK(+[](GObject *c, GParamSpec *, gpointer d) {
+            Worker::onDisplayChanged(SPICE_CHANNEL(c), d);
+        }), self);
         g_signal_connect(channel, "display-primary-create", G_CALLBACK(+[](SpiceChannel *c, gint, gint, gint, gint, gint, gpointer, gpointer d) {
             Worker::onDisplayChanged(c, d);
         }), self);
@@ -78,6 +85,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     auto *self = static_cast<Worker *>(data);
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
+    self->audio.detach(channel);
     self->webdav.remove(channel);
     self->webdavOpened.remove(channel);
     self->owner->updateSharingState();
@@ -107,8 +115,13 @@ void Session::Worker::onDisplayChanged(SpiceChannel *channel, gpointer data) {
     auto *self = static_cast<Worker *>(data);
     SpiceDisplayPrimary primary{};
     QImage image;
-    if (spice_display_channel_get_primary(channel, 0, &primary))
-        image = copyPrimary(primary.format, primary.width, primary.height, primary.stride, primary.data);
+    if (spice_display_channel_get_primary(channel, 0, &primary)) {
+        GArray *monitors = nullptr;
+        g_object_get(channel, "monitors", &monitors, nullptr);
+        image = copyMonitor(primary, monitors);
+        if (monitors) g_array_unref(monitors);
+        qCDebug(displayLog) << "surface" << QSize(primary.width, primary.height) << "visible monitor" << image.size();
+    }
     QMetaObject::invokeMethod(self->owner, [owner = self->owner, image] { Q_EMIT owner->frameReady(image); }, Qt::QueuedConnection);
 }
 
@@ -306,6 +319,7 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
 }
 
 void Session::Worker::disconnect() {
+    audio.detach();
     ++sharingGeneration;
     webdav.clear();
     webdavOpened.clear();
@@ -611,3 +625,14 @@ void Session::setDesiredDisplaySize(QSize size) {
 }
 
 } // namespace QtSpice
+
+namespace QtSpice {
+bool Session::audioEnabled() const { return worker_->audio.enabled; }
+bool Session::audioMuted() const { return worker_->audio.muted; }
+double Session::audioVolume() const { return worker_->audio.volume; }
+Session::AudioState Session::audioState() const { return worker_->audio.state; }
+QString Session::audioError() const { return worker_->audio.error; }
+void Session::setAudioEnabled(bool v) { worker_->audio.setEnabled(v); }
+void Session::setAudioMuted(bool v) { worker_->audio.muted = v; Q_EMIT audioChanged(); }
+void Session::setAudioVolume(double v) { worker_->audio.volume = std::isfinite(v) ? std::clamp(v, 0.0, 1.0) : 1.0; Q_EMIT audioChanged(); }
+}

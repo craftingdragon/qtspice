@@ -4,7 +4,7 @@ Qt 6 SPICE client library based on `spice-client-glib-2.0`, without GTK widgets.
 
 ## Build
 
-Requires a C++20 compiler, CMake 3.24+, Qt 6 Core, Gui, Widgets, Test, WebEngineWidgets and Network, pkg-config, and `spice-client-glib-2.0` development files. Native Wayland relative pointer capture is built when Qt 6.5+, Qt GuiPrivate headers, `wayland-client`, `wayland-protocols`, and `wayland-scanner` are available.
+Requires a C++20 compiler, CMake 3.24+, Qt 6 Core, Gui, Widgets, Test, Multimedia, WebEngineWidgets and Network, pkg-config, and `spice-client-glib-2.0` development files. Native Wayland relative pointer capture is built when Qt 6.5+, Qt GuiPrivate headers, `wayland-client`, `wayland-protocols`, and `wayland-scanner` are available.
 
 ```sh
 cmake -S . -B build
@@ -124,3 +124,9 @@ QT_QPA_PLATFORM=offscreen scripts/with-private-libsoup ctest --test-dir build --
 These optional tests exercise local SPICE servers, TLS, exact chunk termination, and synthetic 64 MiB downloads. Running them against affected system libsoup is expected to fail. A custom build directory can be passed to the build script; set `QTSPICE_PRIVATE_LIBSOUP_PREFIX` to its `libsoup-private` directory when using the launcher. See [patch details](patches/README.md).
 
 The example viewers route libspice's exact localized “resource temporarily unavailable” warning to `qtspice.transport` debug logging. This is the libspice 0.42 TLS backpressure diagnostic; normal operation retries the write. To inspect these messages, launch with `QT_LOGGING_RULES='qtspice.transport.debug=true'`. Other SPICE warnings, critical assertions (including duplicate cursor initialization), and connection errors remain visible. This policy applies to the example applications; embedding QtSpice does not install a global log handler.
+
+## Audio playback
+
+Guest audio plays through Qt Multimedia using the host default output device. Playback starts enabled, unmuted, at full local volume. Both viewers provide an **Audio** menu inside the console with Enable Audio, Mute, a volume slider, and playback status. Settings are remembered separately by each viewer; existing consoles remain independent. Local volume is combined with guest volume/mute without changing the guest mixer.
+
+The VM needs a sound device configured to use SPICE audio and a working guest audio driver. Microphone forwarding is not implemented. Missing host devices or unsupported guest PCM formats produce an audio status error while the desktop remains connected. Output follows changes to the default device. Buffering is bounded; latency reporting is an estimate, not a guarantee of precise audio/video synchronization.
