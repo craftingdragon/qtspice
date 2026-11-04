@@ -84,3 +84,15 @@ Both arguments are required together. Proxmox CLI sharing applies to every SPICE
 The VM must expose the `org.spice-space.webdav.0` SPICE virtio port, and the guest must run **spice-webdavd**. See the [upstream folder-sharing setup](https://spice.pages.freedesktop.org/spice-space/spice-user-manual.html#_folder_sharing). QtSpice does not modify VM settings. In a Linux guest, open the share through the file manager's network locations or `dav://localhost:9843`; Windows needs the SPICE WebDAV service and its drive mapping tools. “Active” means the channel and guest port are open, not that the guest filesystem is mounted. Missing channel/service support is reported in the dialog.
 
 Transfers happen through the guest file manager, using libspice's WebDAV server and filesystem semantics (including its handling of symlinks and host permissions). No GTK widget library or separate public HTTP listener is added. This milestone does not implement drag-and-drop uploads or per-file progress reporting.
+
+### Chromium diagnostics
+
+The Proxmox viewer suppresses routine Chromium log output by default, including repeated TLS handshake diagnostics for self-signed certificates. Fatal Chromium diagnostics remain enabled. Certificate validation, certificate prompts, and QtSpice connection/error reporting continue normally.
+
+To enable Chromium diagnostics for troubleshooting, supply an explicit logging setting before starting the viewer:
+
+```sh
+QTWEBENGINE_CHROMIUM_FLAGS='--enable-logging=stderr --log-level=0' ./build/proxmox-viewer https://proxmox.example:8006
+```
+
+Explicit logging switches in `QTWEBENGINE_CHROMIUM_FLAGS` override the quiet default; unrelated Chromium flags and proxy configuration are preserved. See [Qt WebEngine debugging documentation](https://doc.qt.io/qt-6/qtwebengine-debugging.html).

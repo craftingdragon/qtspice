@@ -1,3 +1,4 @@
+#include "../browserlogging.h"
 #include "../sharedfolder.h"
 #include "certificatestore.h"
 #include "downloadpolicy.h"
@@ -199,6 +200,7 @@ private:
 };
 
 int main(int argc, char **argv) {
+    configureBrowserLogging();
     QApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("QtSpice"));
     QCoreApplication::setApplicationName(QStringLiteral("ProxmoxViewer"));
