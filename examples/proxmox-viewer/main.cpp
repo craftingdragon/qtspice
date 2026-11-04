@@ -1,5 +1,6 @@
 #include "certificatestore.h"
 #include "downloadpolicy.h"
+#include "framesnapshot.h"
 #include "../viewersettings.h"
 #include "../browserproxy.h"
 #include "../../src/core/tunnelproxy.h"
@@ -35,7 +36,27 @@ public:
         auto *widget = new QtSpice::Widget(this);
         widget->setSession(&session_);
         setCentralWidget(widget);
-        auto *resizeAction = menuBar()->addMenu(QStringLiteral("View"))->addAction(QStringLiteral("Auto Resize Guest"));
+        auto *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
+        auto *snapshotAction = viewMenu->addAction(QStringLiteral("Save Next Frame…"));
+        connect(snapshotAction, &QAction::triggered, this, [this] {
+            const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save next guest frame"),
+                QStringLiteral("frame.png"), QStringLiteral("PNG image (*.png)"));
+            if (path.isEmpty()) return;
+            snapshot_.arm(path);
+            statusBar()->showMessage(QStringLiteral("Waiting for the next guest frame…"));
+        });
+        connect(&snapshot_, &FrameSnapshot::pendingChanged, snapshotAction, [snapshotAction](bool pending) {
+            snapshotAction->setEnabled(!pending);
+        });
+        connect(&session_, &QtSpice::Session::frameReady, &snapshot_, &FrameSnapshot::capture);
+        connect(&snapshot_, &FrameSnapshot::saved, this, [this](const QString &path) {
+            statusBar()->showMessage(QStringLiteral("Frame saved to %1").arg(path));
+        });
+        connect(&snapshot_, &FrameSnapshot::failed, this, [this](const QString &message) {
+            statusBar()->showMessage(message);
+            QMessageBox::warning(this, QStringLiteral("Snapshot"), message);
+        });
+        auto *resizeAction = viewMenu->addAction(QStringLiteral("Auto Resize Guest"));
         resizeAction->setCheckable(true);
         resizeAction->setChecked(ViewerSettings::autoResizeGuest());
         widget->setAutoResizeGuest(resizeAction->isChecked());
@@ -45,6 +66,7 @@ public:
         });
         connect(&session_, &QtSpice::Session::errorOccurred, this, [this](const QString &message) { statusBar()->showMessage(message); });
         connect(&session_, &QtSpice::Session::stateChanged, this, [this](QtSpice::Session::State state) {
+            if (state == QtSpice::Session::State::Disconnected) snapshot_.cancel();
             if (state == QtSpice::Session::State::Connected)
                 statusBar()->showMessage(session_.mouseMode() == QtSpice::Session::MouseMode::Server
                     ? QStringLiteral("Connected · Relative mouse: click console to capture; Ctrl+Alt+G releases it")
@@ -66,6 +88,7 @@ public:
     }
 private:
     QtSpice::Session session_;
+    FrameSnapshot snapshot_;
 };
 
 class BrowserWindow final : public QMainWindow {

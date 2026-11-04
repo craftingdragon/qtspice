@@ -55,3 +55,5 @@ QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu ctest --test-
 ```
 
 Log in through the embedded browser and choose **Console → SPICE**. The example intercepts the downloaded `.vv` file and opens the console in a QtSpice window. Login cookies are persisted by its named WebEngine profile. For an overridable certificate warning, **Continue** remembers that exact certificate, origin, and warning type across restarts; a changed certificate or different Proxmox origin prompts again. The SPICE connection uses the CA and certificate subject from the `.vv` file.
+
+Inside each Proxmox SPICE console window, choose **View → Save Next Frame…** and select a PNG filename. The next nonempty frame received by that connection is saved at its original guest resolution, before widget scaling, without decorations or overlays. The action waits for a new frame; an idle guest may need a screen update. It captures even a black frame and can be used again after each save. Existing output files are replaced atomically. Success appears in the console status bar; save errors also open a warning dialog.
