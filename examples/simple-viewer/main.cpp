@@ -1,6 +1,7 @@
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceWidget.h>
 #include "../viewersettings.h"
+#include "../scalingmenu.h"
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QMessageBox>
@@ -51,7 +52,9 @@ int main(int argc, char **argv) {
     auto *widget = new QtSpice::Widget(&window);
     widget->setSession(&session);
     window.setCentralWidget(widget);
-    auto *resizeAction = window.menuBar()->addMenu(QStringLiteral("View"))->addAction(QStringLiteral("Auto Resize Guest"));
+    auto *viewMenu = window.menuBar()->addMenu(QStringLiteral("View"));
+    addScalingMenu(viewMenu, widget);
+    auto *resizeAction = viewMenu->addAction(QStringLiteral("Auto Resize Guest"));
     resizeAction->setCheckable(true);
     resizeAction->setChecked(ViewerSettings::autoResizeGuest());
     widget->setAutoResizeGuest(resizeAction->isChecked());

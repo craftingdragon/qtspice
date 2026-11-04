@@ -2,6 +2,7 @@
 #include "downloadpolicy.h"
 #include "framesnapshot.h"
 #include "../viewersettings.h"
+#include "../scalingmenu.h"
 #include "../browserproxy.h"
 #include "../../src/core/tunnelproxy.h"
 #include <QtSpice/QSpiceConnection.h>
@@ -37,6 +38,7 @@ public:
         widget->setSession(&session_);
         setCentralWidget(widget);
         auto *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
+        addScalingMenu(viewMenu, widget);
         auto *snapshotAction = viewMenu->addAction(QStringLiteral("Save Next Frame…"));
         connect(snapshotAction, &QAction::triggered, this, [this] {
             const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save next guest frame"),

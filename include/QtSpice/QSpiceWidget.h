@@ -7,6 +7,8 @@
 #include <QTimer>
 #include <memory>
 
+class QScrollBar;
+
 namespace QtSpice {
 class Session;
 class WaylandPointerLock;
@@ -14,6 +16,10 @@ class ClipboardBridge;
 class Widget final : public QWidget {
     Q_OBJECT
 public:
+    enum class ScalingMode { SmoothFit, UnfilteredFit, NativePixels };
+    Q_ENUM(ScalingMode)
+    ScalingMode scalingMode() const noexcept;
+    void setScalingMode(ScalingMode mode);
     explicit Widget(QWidget *parent = nullptr);
     ~Widget() override;
     void setSession(Session *session);
@@ -21,9 +27,11 @@ public:
     void setAutoResizeGuest(bool enabled);
     QSize sizeHint() const override;
 Q_SIGNALS:
+    void scalingModeChanged(ScalingMode mode);
     void autoResizeGuestChanged(bool enabled);
     void guestResizeRequested(QSize size);
 protected:
+    bool event(QEvent *) override;
     void paintEvent(QPaintEvent *) override;
     void mouseMoveEvent(QMouseEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
@@ -36,6 +44,12 @@ protected:
     void showEvent(QShowEvent *) override;
     void resizeEvent(QResizeEvent *) override;
 private:
+    ScalingMode scalingMode_ = ScalingMode::SmoothFit;
+    QScrollBar *horizontal_;
+    QScrollBar *vertical_;
+    QSize contentSize_;
+    void updateDisplayGeometry();
+    QRectF frameRect() const;
     QPointer<Session> session_;
     QImage frame_;
     QString statusText_ = QStringLiteral("Disconnected");

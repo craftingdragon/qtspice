@@ -2,6 +2,14 @@
 #include <QSettings>
 
 namespace ViewerSettings {
+inline int scalingMode() {
+    bool ok = false;
+    const int value = QSettings().value(QStringLiteral("display/scalingMode"), 0).toInt(&ok);
+    return ok && value >= 0 && value <= 2 ? value : 0;
+}
+inline void setScalingMode(int mode) {
+    QSettings().setValue(QStringLiteral("display/scalingMode"), mode);
+}
 inline bool autoResizeGuest() {
     return QSettings().value(QStringLiteral("display/autoResizeGuest"), true).toBool();
 }

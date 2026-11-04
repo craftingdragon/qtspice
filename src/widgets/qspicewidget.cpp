@@ -2,6 +2,10 @@
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceDisplay.h>
 #include "clipboardbridge.h"
+#include "displaygeometry.h"
+#include <QScrollBar>
+#include <QStyle>
+#include <QEvent>
 #include <QPainter>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -17,13 +21,19 @@
 
 namespace QtSpice {
 Widget::Widget(QWidget *parent) : QWidget(parent) {
+    horizontal_ = new QScrollBar(Qt::Horizontal, this);
+    vertical_ = new QScrollBar(Qt::Vertical, this);
+    horizontal_->hide();
+    vertical_->hide();
+    connect(horizontal_, &QScrollBar::valueChanged, this, qOverload<>(&Widget::update));
+    connect(vertical_, &QScrollBar::valueChanged, this, qOverload<>(&Widget::update));
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
     clipboardBridge_ = std::make_unique<ClipboardBridge>();
     resizeTimer_.setSingleShot(true);
     resizeTimer_.setInterval(250);
     connect(&resizeTimer_, &QTimer::timeout, this, [this] {
-        if (!autoResizeGuest_ || !isVisible() || !session_) return;
+        if (scalingMode_ == ScalingMode::NativePixels || !autoResizeGuest_ || !isVisible() || !session_) return;
         const QSize requested = size();
         if (requested.width() < 320 || requested.height() < 200 || requested.width() > 8192 ||
             requested.height() > 8192 || qint64(requested.width()) * requested.height() > 32 * 1024 * 1024 ||
@@ -72,6 +82,7 @@ void Widget::setSession(Session *session) {
     }
     session_ = session;
     frame_ = {};
+    updateDisplayGeometry();
     statusText_ = QStringLiteral("Disconnected");
     update();
     if (!session_) return;
@@ -80,11 +91,11 @@ void Widget::setSession(Session *session) {
     connect(session_, &Session::guestClipboardText, clipboardBridge_.get(), &ClipboardBridge::applyGuestText);
     connect(session_, &Session::clipboardReadyChanged, clipboardBridge_.get(), &ClipboardBridge::setActive);
     clipboardBridge_->setActive(session_->clipboardReady());
-    connect(session_, &Session::frameReady, this, [this](const QImage &image) { frame_ = image; updateGeometry(); update(); });
+    connect(session_, &Session::frameReady, this, [this](const QImage &image) { frame_ = image; updateDisplayGeometry(); updateGeometry(); update(); });
     connect(session_, &Session::stateChanged, this, [this](Session::State state) {
         if (state == Session::State::Connecting) statusText_ = QStringLiteral("Connecting…");
         else if (state == Session::State::Connected) statusText_ = QStringLiteral("Waiting for display…");
-        else { statusText_ = QStringLiteral("Disconnected"); frame_ = {}; releaseMouseGrab(); }
+        else { statusText_ = QStringLiteral("Disconnected"); frame_ = {}; updateDisplayGeometry(); releaseMouseGrab(); }
         update();
     });
     connect(session_, &Session::errorOccurred, this, [this](const QString &message) {
@@ -109,6 +120,50 @@ void Widget::setSession(Session *session) {
         if (!ready) releaseMouseGrab();
     });
 }
+Widget::ScalingMode Widget::scalingMode() const noexcept { return scalingMode_; }
+void Widget::setScalingMode(ScalingMode mode) {
+    if (mode != ScalingMode::SmoothFit && mode != ScalingMode::UnfilteredFit && mode != ScalingMode::NativePixels) return;
+    if (mode == scalingMode_) return;
+    if (session_) session_->releaseAllInputs();
+    releaseMouseGrab();
+    scalingMode_ = mode;
+    resizeTimer_.stop();
+    lastRequestedSize_ = {};
+    if (session_ && mode == ScalingMode::NativePixels) session_->setDesiredDisplaySize({});
+    updateDisplayGeometry();
+    scheduleGuestResize();
+    update();
+    Q_EMIT scalingModeChanged(mode);
+}
+QRectF Widget::frameRect() const {
+    return displayRect(frame_.size(), contentSize_, devicePixelRatioF(), scalingMode_ == ScalingMode::NativePixels,
+                       {horizontal_->value(), vertical_->value()});
+}
+void Widget::updateDisplayGeometry() {
+    const int extent = style()->pixelMetric(QStyle::PM_ScrollBarExtent);
+    const qreal dpr = devicePixelRatioF();
+    bool h = false, v = false;
+    if (scalingMode_ == ScalingMode::NativePixels && !frame_.isNull()) {
+        for (int i = 0; i < 3; ++i) {
+            h = frame_.width() > qFloor(std::max(0, width() - (v ? extent : 0)) * dpr);
+            v = frame_.height() > qFloor(std::max(0, height() - (h ? extent : 0)) * dpr);
+        }
+    }
+    contentSize_ = QSize(std::max(0, width() - (v ? extent : 0)), std::max(0, height() - (h ? extent : 0)));
+    horizontal_->setGeometry(0, contentSize_.height(), contentSize_.width(), extent);
+    vertical_->setGeometry(contentSize_.width(), 0, extent, contentSize_.height());
+    horizontal_->setVisible(h);
+    vertical_->setVisible(v);
+    horizontal_->setPageStep(qFloor(contentSize_.width()*dpr));
+    vertical_->setPageStep(qFloor(contentSize_.height()*dpr));
+    horizontal_->setRange(0, h ? std::max(0, frame_.width()-horizontal_->pageStep()) : 0);
+    vertical_->setRange(0, v ? std::max(0, frame_.height()-vertical_->pageStep()) : 0);
+}
+bool Widget::event(QEvent *event) {
+    const bool result = QWidget::event(event);
+    if (event->type() == QEvent::DevicePixelRatioChange) { updateDisplayGeometry(); update(); }
+    return result;
+}
 bool Widget::autoResizeGuest() const noexcept { return autoResizeGuest_; }
 void Widget::setAutoResizeGuest(bool enabled) {
     if (autoResizeGuest_ == enabled) return;
@@ -120,7 +175,7 @@ void Widget::setAutoResizeGuest(bool enabled) {
     Q_EMIT autoResizeGuestChanged(enabled);
 }
 void Widget::scheduleGuestResize() {
-    if (autoResizeGuest_ && session_ && isVisible()) resizeTimer_.start();
+    if (scalingMode_ != ScalingMode::NativePixels && autoResizeGuest_ && session_ && isVisible()) resizeTimer_.start();
 }
 void Widget::releaseMouseGrab() {
 #ifdef QTSPICE_WAYLAND_POINTER_LOCK
@@ -137,7 +192,14 @@ QSize Widget::sizeHint() const { return frame_.isNull() ? QSize(800, 600) : fram
 void Widget::paintEvent(QPaintEvent *) {
     QPainter painter(this);
     painter.fillRect(rect(), Qt::black);
-    if (!frame_.isNull()) painter.drawImage(fittedRect(frame_.size(), size()), frame_);
+    if (!frame_.isNull()) {
+        painter.setClipRect(QRect(QPoint(), contentSize_));
+        const QRectF area = frameRect();
+        const bool scaled = qAbs(area.width() * devicePixelRatioF() - frame_.width()) > 0.01 ||
+                            qAbs(area.height() * devicePixelRatioF() - frame_.height()) > 0.01;
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, scalingMode_ == ScalingMode::SmoothFit && scaled);
+        painter.drawImage(area, frame_);
+    }
     else { painter.setPen(Qt::white); painter.drawText(rect(), Qt::AlignCenter | Qt::TextWordWrap, statusText_); }
 }
 int Widget::buttonMask(Qt::MouseButtons buttons) {
@@ -172,11 +234,13 @@ void Widget::mouseMoveEvent(QMouseEvent *event) {
             hasLastMouse_ = true;
             return;
         }
-        QPoint p = guestPoint(event->position().toPoint(), frame_.size(), size());
+        if (!QRectF(QPointF(), QSizeF(contentSize_)).contains(event->position())) return;
+        QPoint p = displayPoint(event->position(), frame_.size(), frameRect());
         session_->sendPointer(p.x(), p.y(), buttonMask(event->buttons()));
     }
 }
 void Widget::mousePressEvent(QMouseEvent *event) {
+    if (!QRectF(QPointF(), QSizeF(contentSize_)).contains(event->position())) return;
     setFocus();
     bool justGrabbed = false;
 #ifdef QTSPICE_WAYLAND_POINTER_LOCK
@@ -251,6 +315,7 @@ void Widget::showEvent(QShowEvent *event) {
 }
 void Widget::resizeEvent(QResizeEvent *event) {
     QWidget::resizeEvent(event);
+    updateDisplayGeometry();
     scheduleGuestResize();
 }
 }
