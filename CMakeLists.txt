@@ -56,6 +56,10 @@ target_link_libraries(proxmox-viewer PRIVATE QtSpice Qt6::WebEngineWidgets Qt6::
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(sharedfolder_test tests/sharedfolder_test.cpp)
+  target_compile_definitions(sharedfolder_test PRIVATE QT_NO_KEYWORDS)
+  target_link_libraries(sharedfolder_test PRIVATE QtSpice Qt6::Test Qt6::Network PkgConfig::SPICE)
+  add_test(NAME sharedfolder_test COMMAND sharedfolder_test)
   add_executable(framesnapshot_test tests/framesnapshot_test.cpp examples/proxmox-viewer/framesnapshot.cpp examples/proxmox-viewer/framesnapshot.h)
   target_link_libraries(framesnapshot_test PRIVATE QtSpice Qt6::Test)
   add_test(NAME framesnapshot_test COMMAND framesnapshot_test)

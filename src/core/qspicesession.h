@@ -18,6 +18,10 @@ struct QtSpice::Session::Worker {
     static void onChannelEvent(SpiceChannel *, SpiceChannelEvent, gpointer);
     std::unique_ptr<QtSpice::TunnelProxy> proxy;
 
+    QSet<SpiceChannel *> webdav;
+    QSet<SpiceChannel *> webdavOpened;
+    int sharingGeneration = 0;
+    void applySharing();
     Session *owner;
     SpiceSession *session = nullptr;
     SpiceDisplayChannel *display = nullptr;

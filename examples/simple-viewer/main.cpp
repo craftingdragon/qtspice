@@ -1,3 +1,4 @@
+#include "../sharedfolder.h"
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceWidget.h>
 #include "../viewersettings.h"
@@ -19,12 +20,16 @@ int main(int argc, char **argv) {
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("QtSpice direct SPICE viewer"));
     parser.addHelpOption();
+    SharedFolder::addOptions(parser);
     QCommandLineOption snapshot(QStringLiteral("snapshot"), QStringLiteral("Save the first received frame and exit"), QStringLiteral("path"));
     parser.addOption(snapshot);
     QCommandLineOption proxy(QStringLiteral("proxy"), QStringLiteral("Network proxy: http://host:port or socks5://host:port"), QStringLiteral("url"));
     parser.addOption(proxy);
     parser.addPositionalArgument(QStringLiteral("target"), QStringLiteral("spice://host:port or connection.vv"));
     parser.process(app);
+    std::optional<QtSpice::SharedDirectory> sharedDirectory;
+    QString sharingError;
+    if (!SharedFolder::parse(parser, sharedDirectory, sharingError)) { qCritical().noquote() << sharingError; return 1; }
     if (parser.positionalArguments().size() != 1) parser.showHelp(1);
     const QString target = parser.positionalArguments().first();
     QtSpice::ConnectionConfig config;
@@ -52,6 +57,7 @@ int main(int argc, char **argv) {
     auto *widget = new QtSpice::Widget(&window);
     widget->setSession(&session);
     window.setCentralWidget(widget);
+    SharedFolder::addMenu(window.menuBar(), &session);
     auto *viewMenu = window.menuBar()->addMenu(QStringLiteral("View"));
     addScalingMenu(viewMenu, widget);
     auto *resizeAction = viewMenu->addAction(QStringLiteral("Auto Resize Guest"));
@@ -82,6 +88,7 @@ int main(int argc, char **argv) {
     });
     window.resize(1024, 768);
     window.show();
+    config.sharedDirectory = sharedDirectory;
     session.connectToConfig(config);
     return app.exec();
 }

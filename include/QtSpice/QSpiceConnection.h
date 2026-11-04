@@ -5,6 +5,14 @@
 #include <optional>
 
 namespace QtSpice {
+enum class SharedDirectoryAccess { ReadOnly, ReadWrite };
+struct SharedDirectory {
+    QString path;
+    SharedDirectoryAccess access;
+};
+// Resolves the directory and checks host permissions.
+std::optional<SharedDirectory> validateSharedDirectory(const SharedDirectory &, QString *error = nullptr);
+
 struct ConnectionConfig {
     QString host;
     quint16 port = 0;
@@ -15,6 +23,7 @@ struct ConnectionConfig {
     QString certificateSubject;
     // Optional outer HTTP CONNECT or SOCKS5 proxy, including for the .vv proxy.
     QString networkProxy;
+    std::optional<SharedDirectory> sharedDirectory;
 };
 
 // Requires an explicit http:// or socks5:// URL. Errors never include credentials.

@@ -67,3 +67,20 @@ Both viewers offer **View → Scaling** (in each Proxmox SPICE console window):
 - **Native 1:1 Pixels** maps each guest pixel to one display pixel, accounting for the screen's device pixel ratio. Smaller desktops are centered; larger desktops have scrollbars. The mouse wheel over the desktop continues going to the guest; use the scrollbars to pan.
 
 The selected mode is remembered separately for each viewer. Native mode pauses automatic guest resizing while preserving the Auto Resize Guest preference; switching back to a fit mode resumes that preference. Snapshots always retain the original guest pixels, independently of the display mode.
+
+### WebDAV shared folders
+
+Both viewers provide **Files → Shared Folder…** inside the SPICE console. Select a local folder, explicitly choose **Read-only** or **Read/write**, enable sharing, and press **Apply**. Read-only lets the guest browse and copy host files. Read/write also permits creating, modifying, and deleting files in the shared folder. **Close** dismisses unapplied edits; Apply takes effect immediately. Use the same dialog to change the folder/access or disable sharing. Changes close existing WebDAV connections, so finish file operations first. The dialog reports channel and guest-service readiness separately from the console connection status.
+
+Sharing starts disabled and is not saved. Both viewers also accept an explicit folder/access pair:
+
+```sh
+./build/simple-viewer --shared-dir /path/to/folder --shared-dir-mode ro connection.vv
+./build/proxmox-viewer --shared-dir /path/to/folder --shared-dir-mode rw https://proxmox.example:8006
+```
+
+Both arguments are required together. Proxmox CLI sharing applies to every SPICE console opened during that process; each console can then change or disable it independently. Downloaded `.vv` files cannot enable folder sharing. Library users can supply `ConnectionConfig::sharedDirectory`, call `Session::setSharedDirectory`, and observe `sharingChanged`, `sharingState()`, and `sharingError()`.
+
+The VM must expose the `org.spice-space.webdav.0` SPICE virtio port, and the guest must run **spice-webdavd**. See the [upstream folder-sharing setup](https://spice.pages.freedesktop.org/spice-space/spice-user-manual.html#_folder_sharing). QtSpice does not modify VM settings. In a Linux guest, open the share through the file manager's network locations or `dav://localhost:9843`; Windows needs the SPICE WebDAV service and its drive mapping tools. “Active” means the channel and guest port are open, not that the guest filesystem is mounted. Missing channel/service support is reported in the dialog.
+
+Transfers happen through the guest file manager, using libspice's WebDAV server and filesystem semantics (including its handling of symlinks and host permissions). No GTK widget library or separate public HTTP listener is added. This milestone does not implement drag-and-drop uploads or per-file progress reporting.

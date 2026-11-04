@@ -3,6 +3,8 @@
 #include <QtSpice/QSpiceDisplay.h>
 
 #include <QMetaObject>
+#include <QFileInfo>
+#include <QTimer>
 #include <QLoggingCategory>
 #include <utility>
 #include <spice/vd_agent.h>
@@ -31,6 +33,14 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
     g_signal_connect(channel, "channel-event", G_CALLBACK(onChannelEvent), self);
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
+    if (SPICE_IS_WEBDAV_CHANNEL(channel)) {
+        self->webdav.insert(channel);
+        g_signal_connect(channel, "notify::port-opened", G_CALLBACK(+[](GObject *, GParamSpec *, gpointer data) {
+            static_cast<Worker *>(data)->owner->updateSharingState();
+        }), self);
+        if (self->owner->sharedDirectory_ && self->owner->sharingError_.isEmpty()) spice_channel_connect(channel);
+        self->owner->updateSharingState();
+    }
     if (type == SPICE_CHANNEL_MAIN) {
         self->main = SPICE_MAIN_CHANNEL(channel);
         g_signal_connect(channel, "main-mouse-update", G_CALLBACK(onMouseUpdate), self);
@@ -68,6 +78,9 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     auto *self = static_cast<Worker *>(data);
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
+    self->webdav.remove(channel);
+    self->webdavOpened.remove(channel);
+    self->owner->updateSharingState();
     if (channel == SPICE_CHANNEL(self->display)) self->display = nullptr;
     if (channel == SPICE_CHANNEL(self->inputs)) {
         self->inputs = nullptr;
@@ -212,6 +225,15 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
         qCDebug(inputLog) << "inputs channel event" << event << "ready" << ready;
         QMetaObject::invokeMethod(self->owner, [owner = self->owner, ready] { owner->setInputReady(ready); }, Qt::QueuedConnection);
     }
+    if (self->webdav.contains(channel)) {
+        if (event == SPICE_CHANNEL_OPENED) self->webdavOpened.insert(channel);
+        else self->webdavOpened.remove(channel);
+        if (event >= SPICE_CHANNEL_ERROR_CONNECT) {
+            const GError *error = spice_channel_get_error(channel);
+            self->owner->sharingError_ = error ? QString::fromUtf8(error->message) : QStringLiteral("WebDAV channel connection failed");
+        }
+        self->owner->updateSharingState();
+    }
     if (type != SPICE_CHANNEL_MAIN) return;
     if (event == SPICE_CHANNEL_OPENED) {
         self->mainOpened = true;
@@ -247,6 +269,9 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
         proxyUrl = proxy->url();
     }
     session = spice_session_new();
+    owner->sharedDirectory_ = config.sharedDirectory;
+    owner->sharingError_.clear();
+    applySharing();
     const QByteArray name = config.host.toUtf8();
     const QByteArray port = config.port ? QByteArray::number(config.port) : QByteArray();
     const QByteArray tlsPort = config.tlsPort ? QByteArray::number(config.tlsPort) : QByteArray();
@@ -281,6 +306,12 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
 }
 
 void Session::Worker::disconnect() {
+    ++sharingGeneration;
+    webdav.clear();
+    webdavOpened.clear();
+    owner->sharedDirectory_.reset();
+    owner->sharingError_.clear();
+    owner->updateSharingState();
     if (!session) { proxy.reset(); return; }
     releaseInputs();
     GList *channels = spice_session_get_channels(session);
@@ -344,6 +375,90 @@ void Session::Worker::releaseInputs() {
     hasPointer = false;
 }
 
+
+std::optional<SharedDirectory> validateSharedDirectory(const SharedDirectory &directory, QString *error) {
+    if (error) error->clear();
+    const QFileInfo info(directory.path);
+    if (directory.path.isEmpty() || !info.isDir() || !info.isReadable() ||
+        (directory.access != SharedDirectoryAccess::ReadOnly && directory.access != SharedDirectoryAccess::ReadWrite) ||
+        (directory.access == SharedDirectoryAccess::ReadWrite && !info.isWritable())) {
+        if (error) *error = QStringLiteral("Select an existing readable directory and a valid access mode; read/write requires write permission.");
+        return std::nullopt;
+    }
+    return SharedDirectory{info.canonicalFilePath(), directory.access};
+}
+
+void Session::Worker::applySharing() {
+    if (!session) return;
+    const auto share = owner->sharedDirectory_;
+    const QByteArray path = share ? share->path.toUtf8() : QByteArray();
+    g_object_set(session, "share-dir-ro", !share || share->access == SharedDirectoryAccess::ReadOnly,
+                 "shared-dir", share ? path.constData() : nullptr, nullptr);
+    if (share) {
+        GObject *server = nullptr;
+        g_object_get(session, "webdav-server", &server, nullptr);
+        if (!server) owner->sharingError_ = QStringLiteral("This libspice build has no WebDAV server support.");
+        if (server) g_object_unref(server);
+    }
+    owner->updateSharingState();
+}
+
+bool Session::setSharedDirectory(const SharedDirectory &directory, QString *error) {
+    const auto validated = validateSharedDirectory(directory, error);
+    if (!validated) return false;
+    disableSharedDirectory();
+    sharedDirectory_ = validated;
+    sharingError_.clear();
+    worker_->applySharing();
+    const int generation = worker_->sharingGeneration;
+    // Allow disconnected channel coroutines to finish resetting before reconnecting.
+    auto *retry = new QTimer(this);
+    retry->setInterval(100);
+    connect(retry, &QTimer::timeout, this, [this, generation, retry] {
+        if (generation != worker_->sharingGeneration || !sharedDirectory_ || !sharingError_.isEmpty() ||
+            worker_->webdav.isEmpty() || worker_->webdavOpened.size() == worker_->webdav.size()) {
+            retry->stop(); retry->deleteLater(); return;
+        }
+        const auto channels = worker_->webdav;
+        for (auto *channel : channels) spice_channel_connect(channel);
+        updateSharingState();
+    });
+    retry->start();
+    updateSharingState();
+    return true;
+}
+void Session::disableSharedDirectory() {
+    ++worker_->sharingGeneration;
+    sharedDirectory_.reset();
+    sharingError_.clear();
+    worker_->applySharing();
+    const auto channels = worker_->webdav;
+    for (auto *channel : channels) spice_channel_disconnect(channel, SPICE_CHANNEL_CLOSED);
+    worker_->webdavOpened.clear();
+    updateSharingState();
+}
+std::optional<SharedDirectory> Session::sharedDirectory() const { return sharedDirectory_; }
+Session::SharingState Session::sharingState() const noexcept { return sharingState_; }
+QString Session::sharingError() const { return sharingError_; }
+void Session::updateSharingState() {
+    SharingState state = SharingState::Disabled;
+    if (sharedDirectory_) {
+        state = SharingState::WaitingForChannel;
+        if (!sharingError_.isEmpty()) state = SharingState::Error;
+        else if (!worker_->webdav.isEmpty()) {
+            state = SharingState::Connecting;
+            if (!worker_->webdavOpened.isEmpty()) state = SharingState::WaitingForGuest;
+            for (auto *channel : worker_->webdavOpened) {
+                gboolean opened = FALSE;
+                g_object_get(channel, "port-opened", &opened, nullptr);
+                if (opened) state = SharingState::Active;
+            }
+        }
+    }
+    sharingState_ = state;
+    Q_EMIT sharingChanged();
+}
+
 Session::Session(QObject *parent) : QObject(parent), worker_(std::make_unique<Worker>(this)) {}
 Session::~Session() = default;
 Session::State Session::state() const noexcept { return state_; }
@@ -392,6 +507,10 @@ void Session::connectToConfig(const ConnectionConfig &config) {
         (!normalized.proxy.isEmpty() && !parseProxyUrl(normalized.proxy, &error))) {
         Q_EMIT errorOccurred(error);
         return;
+    }
+    if (config.sharedDirectory) {
+        normalized.sharedDirectory = validateSharedDirectory(*config.sharedDirectory, &error);
+        if (!normalized.sharedDirectory) { Q_EMIT errorOccurred(error); return; }
     }
     setState(State::Connecting);
     worker_->post([worker = worker_.get(), normalized] { worker->connectToConfig(normalized); });

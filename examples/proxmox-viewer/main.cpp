@@ -1,3 +1,4 @@
+#include "../sharedfolder.h"
 #include "certificatestore.h"
 #include "downloadpolicy.h"
 #include "framesnapshot.h"
@@ -37,6 +38,7 @@ public:
         auto *widget = new QtSpice::Widget(this);
         widget->setSession(&session_);
         setCentralWidget(widget);
+        SharedFolder::addMenu(menuBar(), &session_);
         auto *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
         addScalingMenu(viewMenu, widget);
         auto *snapshotAction = viewMenu->addAction(QStringLiteral("Save Next Frame…"));
@@ -95,7 +97,7 @@ private:
 
 class BrowserWindow final : public QMainWindow {
 public:
-    explicit BrowserWindow(const QUrl &initialUrl, const QUrl &networkProxy) : networkProxy_(networkProxy) {
+    explicit BrowserWindow(const QUrl &initialUrl, const QUrl &networkProxy, std::optional<QtSpice::SharedDirectory> share) : sharedDirectory_(share), networkProxy_(networkProxy) {
         setWindowTitle(QStringLiteral("QtSpice Proxmox Viewer"));
         profile_ = new QWebEngineProfile(QStringLiteral("QtSpiceProxmox"), qApp);
         profile_->setPersistentCookiesPolicy(QWebEngineProfile::ForcePersistentCookies);
@@ -171,6 +173,7 @@ public:
                         QFile::remove(path);
                         if (config) {
                             config->networkProxy = networkProxy_.toString(QUrl::FullyEncoded);
+                            config->sharedDirectory = sharedDirectory_;
                             new ConsoleWindow(*config);
                             return;
                         }
@@ -191,6 +194,7 @@ private:
     QWebEngineView *view_ = nullptr;
     QTemporaryDir temp_;
     CertificateStore trust_;
+    std::optional<QtSpice::SharedDirectory> sharedDirectory_;
     QUrl networkProxy_;
 };
 
@@ -200,10 +204,14 @@ int main(int argc, char **argv) {
     QCoreApplication::setApplicationName(QStringLiteral("ProxmoxViewer"));
     QCommandLineParser parser;
     parser.addHelpOption();
+    SharedFolder::addOptions(parser);
     QCommandLineOption proxy(QStringLiteral("proxy"), QStringLiteral("Proxy for browser and consoles: http://host:port or socks5://host:port"), QStringLiteral("url"));
     parser.addOption(proxy);
     parser.addPositionalArgument(QStringLiteral("url"), QStringLiteral("Proxmox HTTPS URL"));
     parser.process(app);
+    std::optional<QtSpice::SharedDirectory> sharedDirectory;
+    QString sharingError;
+    if (!SharedFolder::parse(parser, sharedDirectory, sharingError)) { qCritical().noquote() << sharingError; return 1; }
     if (parser.positionalArguments().size() != 1) parser.showHelp(1);
     const QUrl url = QUrl::fromUserInput(parser.positionalArguments().first());
     if (url.scheme() != QStringLiteral("https") || url.host().isEmpty()) parser.showHelp(1);
@@ -220,7 +228,7 @@ int main(int argc, char **argv) {
         }
         configureBrowserProxy(browserProxy.url());
     }
-    BrowserWindow window(url, networkProxy);
+    BrowserWindow window(url, networkProxy, sharedDirectory);
     window.show();
     return app.exec();
 }

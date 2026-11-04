@@ -17,6 +17,14 @@ public:
     enum class MouseMode { Client, Server };
     Q_ENUM(MouseMode)
 
+    enum class SharingState { Disabled, WaitingForChannel, Connecting, WaitingForGuest, Active, Error };
+    Q_ENUM(SharingState)
+    bool setSharedDirectory(const SharedDirectory &directory, QString *error = nullptr);
+    void disableSharedDirectory();
+    std::optional<SharedDirectory> sharedDirectory() const;
+    SharingState sharingState() const noexcept;
+    QString sharingError() const;
+
     explicit Session(QObject *parent = nullptr);
     ~Session() override;
     State state() const noexcept;
@@ -35,6 +43,7 @@ public:
     void setDesiredDisplaySize(QSize size);
 
 Q_SIGNALS:
+    void sharingChanged();
     void stateChanged(QtSpice::Session::State state);
     void errorOccurred(const QString &message);
     void channelAdded(int type, int id);
@@ -47,6 +56,11 @@ Q_SIGNALS:
     void guestClipboardText(const QString &text);
 
 private:
+    SharingState sharingState_ = SharingState::Disabled;
+    QString sharingError_;
+    std::optional<SharedDirectory> sharedDirectory_;
+    void updateSharingState();
+    friend struct SessionTestAccess;
     struct Worker;
     std::unique_ptr<Worker> worker_;
     State state_ = State::Disconnected;
