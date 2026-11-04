@@ -234,16 +234,28 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
 
 void Session::Worker::connectToConfig(const ConnectionConfig &config) {
     disconnect();
+    QUrl proxyUrl;
+    if (!config.networkProxy.isEmpty() || !config.proxy.isEmpty()) {
+        proxy = std::make_unique<TunnelProxy>();
+        const QUrl outer = config.networkProxy.isEmpty() ? QUrl() : *parseProxyUrl(config.networkProxy);
+        const QUrl tunnel = config.proxy.isEmpty() ? QUrl() : *parseProxyUrl(config.proxy);
+        if (!proxy->start(outer, tunnel)) {
+            owner->setState(State::Disconnected);
+            Q_EMIT owner->errorOccurred(QStringLiteral("Could not start local proxy bridge"));
+            return;
+        }
+        proxyUrl = proxy->url();
+    }
     session = spice_session_new();
     const QByteArray name = config.host.toUtf8();
     const QByteArray port = config.port ? QByteArray::number(config.port) : QByteArray();
     const QByteArray tlsPort = config.tlsPort ? QByteArray::number(config.tlsPort) : QByteArray();
-    const QByteArray proxy = config.proxy.toUtf8();
+    const QByteArray proxyAddress = proxyUrl.toEncoded();
     const QByteArray password = config.password.toUtf8();
     const QByteArray subject = config.certificateSubject.toUtf8();
     g_object_set(session, "host", name.constData(), "port", port.isEmpty() ? nullptr : port.constData(),
                  "tls-port", tlsPort.isEmpty() ? nullptr : tlsPort.constData(),
-                 "proxy", proxy.isEmpty() ? nullptr : proxy.constData(),
+                 "proxy", proxyAddress.isEmpty() ? nullptr : proxyAddress.constData(),
                  "password", password.isEmpty() ? nullptr : password.constData(),
                  "cert-subject", subject.isEmpty() ? nullptr : subject.constData(), nullptr);
     if (!config.caPem.isEmpty()) {
@@ -254,6 +266,10 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
     }
     if (!config.certificateSubject.isEmpty())
         g_object_set(session, "verify", SPICE_SESSION_VERIFY_SUBJECT, nullptr);
+    if (config.tlsPort && !config.port) {
+        const char *secure[] = {"all", nullptr};
+        g_object_set(session, "secure-channels", secure, nullptr);
+    }
     g_signal_connect(session, "channel-new", G_CALLBACK(onChannelNew), this);
     g_signal_connect(session, "channel-destroy", G_CALLBACK(onChannelDestroy), this);
     if (!spice_session_connect(session)) {
@@ -265,7 +281,7 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
 }
 
 void Session::Worker::disconnect() {
-    if (!session) return;
+    if (!session) { proxy.reset(); return; }
     releaseInputs();
     GList *channels = spice_session_get_channels(session);
     for (GList *item = channels; item; item = item->next)
@@ -275,6 +291,7 @@ void Session::Worker::disconnect() {
     spice_session_disconnect(session);
     g_object_unref(session);
     session = nullptr;
+    proxy.reset();
     display = nullptr;
     inputs = nullptr;
     inputsReady = false;
@@ -367,8 +384,17 @@ void Session::connectToConfig(const ConnectionConfig &config) {
         Q_EMIT errorOccurred(QStringLiteral("Host and nonzero port are required"));
         return;
     }
+    ConnectionConfig normalized = config;
+    if (!normalized.proxy.isEmpty() && !normalized.proxy.contains(QStringLiteral("://")))
+        normalized.proxy.prepend(QStringLiteral("http://"));
+    QString error;
+    if ((!config.networkProxy.isEmpty() && !parseProxyUrl(config.networkProxy, &error)) ||
+        (!normalized.proxy.isEmpty() && !parseProxyUrl(normalized.proxy, &error))) {
+        Q_EMIT errorOccurred(error);
+        return;
+    }
     setState(State::Connecting);
-    worker_->post([worker = worker_.get(), config] { worker->connectToConfig(config); });
+    worker_->post([worker = worker_.get(), normalized] { worker->connectToConfig(normalized); });
 }
 
 void Session::disconnectFromHost() {

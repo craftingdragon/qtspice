@@ -46,6 +46,17 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!errors.isEmpty(), 5000);
         QCOMPARE(session.state(), QtSpice::Session::State::Disconnected);
     }
+    void invalidProxyIsRejectedBeforeConnecting() {
+        QtSpice::Session session;
+        QSignalSpy errors(&session, &QtSpice::Session::errorOccurred);
+        QtSpice::ConnectionConfig config;
+        config.host = QStringLiteral("guest.invalid"); config.port = 5900;
+        config.networkProxy = QStringLiteral("ftp://user:secret@proxy.invalid");
+        session.connectToConfig(config);
+        QCOMPARE(errors.size(), 1);
+        QVERIFY(!errors.first().first().toString().contains(QStringLiteral("secret")));
+        QCOMPARE(session.state(), QtSpice::Session::State::Disconnected);
+    }
     void disconnectedInputIsIgnored() {
         QtSpice::Session session;
         QCOMPARE(session.mouseMode(), QtSpice::Session::MouseMode::Client);

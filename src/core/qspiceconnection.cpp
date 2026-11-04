@@ -3,6 +3,22 @@
 #include <QStringList>
 
 namespace QtSpice {
+std::optional<QUrl> parseProxyUrl(const QString &value, QString *error) {
+    if (error) error->clear();
+    QUrl url(value, QUrl::StrictMode);
+    if (!url.isValid() || url.host().isEmpty() ||
+        (url.scheme() != QStringLiteral("http") && url.scheme() != QStringLiteral("socks5")) ||
+        url.port() == 0 || url.hasQuery() || url.hasFragment() ||
+        (!url.path().isEmpty() && url.path() != QStringLiteral("/")) ||
+        value.contains(QChar::Null) || url.userName().contains(QChar::Null) || url.password().contains(QChar::Null)) {
+        if (error) *error = QStringLiteral("Invalid proxy URL; use http://host:port or socks5://host:port");
+        return std::nullopt;
+    }
+    url.setPort(url.port(url.scheme() == QStringLiteral("http") ? 8080 : 1080));
+    url.setPath({});
+    return url;
+}
+
 std::optional<ConnectionConfig> parseVv(const QByteArray &contents, QString *error) {
     auto fail = [error](const QString &reason) -> std::optional<ConnectionConfig> {
         if (error) *error = reason;
@@ -52,13 +68,17 @@ std::optional<ConnectionConfig> parseVv(const QByteArray &contents, QString *err
         return fail(QStringLiteral("Invalid port"));
     if (!config.port && !config.tlsPort) return fail(QStringLiteral("Missing port or tls-port"));
     config.proxy = fields.value(QStringLiteral("proxy"));
+    // libspice also accepts legacy proxy=host:port entries in .vv files.
+    if (!config.proxy.isEmpty() && !config.proxy.contains(QStringLiteral("://")))
+        config.proxy.prepend(QStringLiteral("http://"));
+    config.networkProxy = fields.value(QStringLiteral("network-proxy"));
+    if ((!config.proxy.isEmpty() && !parseProxyUrl(config.proxy, error)) ||
+        (!config.networkProxy.isEmpty() && !parseProxyUrl(config.networkProxy, error))) return std::nullopt;
     config.password = fields.value(QStringLiteral("password"));
     config.certificateSubject = fields.value(QStringLiteral("host-subject"));
     QString ca = fields.value(QStringLiteral("ca"));
     ca.replace(QStringLiteral("\\n"), QStringLiteral("\n"));
     config.caPem = ca.toUtf8();
-    if (config.proxy.isEmpty() == false && config.tlsPort == 0)
-        return fail(QStringLiteral("Proxy connection requires tls-port"));
     return config;
 }
 }

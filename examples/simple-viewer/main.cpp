@@ -20,6 +20,8 @@ int main(int argc, char **argv) {
     parser.addHelpOption();
     QCommandLineOption snapshot(QStringLiteral("snapshot"), QStringLiteral("Save the first received frame and exit"), QStringLiteral("path"));
     parser.addOption(snapshot);
+    QCommandLineOption proxy(QStringLiteral("proxy"), QStringLiteral("Network proxy: http://host:port or socks5://host:port"), QStringLiteral("url"));
+    parser.addOption(proxy);
     parser.addPositionalArgument(QStringLiteral("target"), QStringLiteral("spice://host:port or connection.vv"));
     parser.process(app);
     if (parser.positionalArguments().size() != 1) parser.showHelp(1);
@@ -37,6 +39,12 @@ int main(int argc, char **argv) {
         if (url.scheme() != QStringLiteral("spice") || url.host().isEmpty() || url.port() < 1 || url.port() > 65535) parser.showHelp(1);
         config.host = url.host();
         config.port = quint16(url.port());
+    }
+    if (parser.isSet(proxy)) {
+        QString error;
+        const auto parsed = QtSpice::parseProxyUrl(parser.value(proxy), &error);
+        if (!parsed) { qCritical().noquote() << error; return 1; }
+        config.networkProxy = parsed->toString(QUrl::FullyEncoded);
     }
     QtSpice::Session session;
     QMainWindow window;

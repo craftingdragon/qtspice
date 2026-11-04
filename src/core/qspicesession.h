@@ -5,6 +5,7 @@
 #include <glib.h>
 #include <spice-client.h>
 #include <QSet>
+#include "tunnelproxy.h"
 
 struct QtSpice::Session::Worker {
     explicit Worker(Session *owner);
@@ -15,6 +16,7 @@ struct QtSpice::Session::Worker {
     static void onChannelNew(SpiceSession *, SpiceChannel *, gpointer);
     static void onChannelDestroy(SpiceSession *, SpiceChannel *, gpointer);
     static void onChannelEvent(SpiceChannel *, SpiceChannelEvent, gpointer);
+    std::unique_ptr<QtSpice::TunnelProxy> proxy;
 
     Session *owner;
     SpiceSession *session = nullptr;

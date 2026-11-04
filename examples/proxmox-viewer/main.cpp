@@ -1,10 +1,13 @@
 #include "certificatestore.h"
 #include "downloadpolicy.h"
 #include "../viewersettings.h"
+#include "../browserproxy.h"
+#include "../../src/core/tunnelproxy.h"
 #include <QtSpice/QSpiceConnection.h>
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceWidget.h>
 #include <QApplication>
+#include <QDebug>
 #include <QCommandLineParser>
 #include <QFile>
 #include <QFileInfo>
@@ -67,7 +70,7 @@ private:
 
 class BrowserWindow final : public QMainWindow {
 public:
-    explicit BrowserWindow(const QUrl &initialUrl) {
+    explicit BrowserWindow(const QUrl &initialUrl, const QUrl &networkProxy) : networkProxy_(networkProxy) {
         setWindowTitle(QStringLiteral("QtSpice Proxmox Viewer"));
         profile_ = new QWebEngineProfile(QStringLiteral("QtSpiceProxmox"), qApp);
         profile_->setPersistentCookiesPolicy(QWebEngineProfile::ForcePersistentCookies);
@@ -138,10 +141,14 @@ public:
                     QString error;
                     if (!file.open(QIODevice::ReadOnly)) error = QStringLiteral("Could not read SPICE connection download");
                     else {
-                        const auto config = QtSpice::parseVv(file.read(1024 * 1024 + 1), &error);
+                        auto config = QtSpice::parseVv(file.read(1024 * 1024 + 1), &error);
                         file.close();
                         QFile::remove(path);
-                        if (config) { new ConsoleWindow(*config); return; }
+                        if (config) {
+                            config->networkProxy = networkProxy_.toString(QUrl::FullyEncoded);
+                            new ConsoleWindow(*config);
+                            return;
+                        }
                     }
                     QMessageBox::warning(this, QStringLiteral("SPICE connection"), error);
                 } else if (state == QWebEngineDownloadRequest::DownloadInterrupted) {
@@ -159,6 +166,7 @@ private:
     QWebEngineView *view_ = nullptr;
     QTemporaryDir temp_;
     CertificateStore trust_;
+    QUrl networkProxy_;
 };
 
 int main(int argc, char **argv) {
@@ -167,12 +175,27 @@ int main(int argc, char **argv) {
     QCoreApplication::setApplicationName(QStringLiteral("ProxmoxViewer"));
     QCommandLineParser parser;
     parser.addHelpOption();
+    QCommandLineOption proxy(QStringLiteral("proxy"), QStringLiteral("Proxy for browser and consoles: http://host:port or socks5://host:port"), QStringLiteral("url"));
+    parser.addOption(proxy);
     parser.addPositionalArgument(QStringLiteral("url"), QStringLiteral("Proxmox HTTPS URL"));
     parser.process(app);
     if (parser.positionalArguments().size() != 1) parser.showHelp(1);
     const QUrl url = QUrl::fromUserInput(parser.positionalArguments().first());
     if (url.scheme() != QStringLiteral("https") || url.host().isEmpty()) parser.showHelp(1);
-    BrowserWindow window(url);
+    QUrl networkProxy;
+    QtSpice::TunnelProxy browserProxy;
+    if (parser.isSet(proxy)) {
+        QString error;
+        const auto parsed = QtSpice::parseProxyUrl(parser.value(proxy), &error);
+        if (!parsed) { qCritical().noquote() << error; return 1; }
+        networkProxy = *parsed;
+        if (!browserProxy.start(networkProxy)) {
+            qCritical() << "Could not start local browser proxy bridge";
+            return 1;
+        }
+        configureBrowserProxy(browserProxy.url());
+    }
+    BrowserWindow window(url, networkProxy);
     window.show();
     return app.exec();
 }
