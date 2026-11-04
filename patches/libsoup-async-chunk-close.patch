@@ -1,0 +1,212 @@
+--- a/libsoup/http1/soup-body-output-stream.c
++++ b/libsoup/http1/soup-body-output-stream.c
+@@ -287,6 +287,93 @@
+ 	return G_OUTPUT_STREAM_CLASS (soup_body_output_stream_parent_class)->close_fn (stream, cancellable, error);
+ }
+ 
++/* Complete chunk framing on the owning main context. The default async
++ * close runs close_fn in a worker, which cannot drive main-context-only
++ * pollable streams such as spice-client-glib's in-memory pipe. */
++static void close_async_step (GTask *task);
++
++static gboolean
++close_async_ready (GObject *stream, gpointer data)
++{
++        close_async_step (G_TASK (data));
++        return G_SOURCE_REMOVE;
++}
++
++static void
++close_async_step (GTask *task)
++{
++        SoupBodyOutputStream *stream = g_task_get_source_object (task);
++        SoupBodyOutputStreamPrivate *priv = soup_body_output_stream_get_instance_private (stream);
++        GCancellable *cancellable = g_task_get_cancellable (task);
++        GError *error = NULL;
++
++        if (g_task_return_error_if_cancelled (task))
++                return;
++
++        if (priv->encoding == SOUP_ENCODING_CHUNKED && !priv->eof) {
++                if (soup_body_output_stream_write_chunked (stream, NULL, 0, FALSE,
++                                                          cancellable, &error) == -1) {
++                        if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK)) {
++                                GSource *source;
++                                g_clear_error (&error);
++                                source = g_pollable_output_stream_create_source (
++                                        G_POLLABLE_OUTPUT_STREAM (priv->base_stream), cancellable);
++                                g_source_set_priority (source, g_task_get_priority (task));
++                                g_source_set_callback (source, G_SOURCE_FUNC (close_async_ready),
++                                                       g_object_ref (task), g_object_unref);
++                                g_source_attach (source, g_task_get_context (task));
++                                g_source_unref (source);
++                                return;
++                        }
++                        g_task_return_error (task, error);
++                        return;
++                }
++                priv->eof = TRUE;
++        }
++        if (!G_OUTPUT_STREAM_CLASS (soup_body_output_stream_parent_class)->close_fn (
++                    G_OUTPUT_STREAM (stream), cancellable, &error)) {
++                g_task_return_error (task, error);
++                return;
++        }
++        g_task_return_boolean (task, TRUE);
++}
++
++static void
++soup_body_output_stream_close_async (GOutputStream *stream, int priority,
++                                     GCancellable *cancellable,
++                                     GAsyncReadyCallback callback, gpointer data)
++{
++        SoupBodyOutputStreamPrivate *priv = soup_body_output_stream_get_instance_private (SOUP_BODY_OUTPUT_STREAM (stream));
++        if (priv->encoding != SOUP_ENCODING_CHUNKED) {
++                G_OUTPUT_STREAM_CLASS (soup_body_output_stream_parent_class)->close_async (
++                        stream, priority, cancellable, callback, data);
++                return;
++        }
++        GTask *task = g_task_new (stream, cancellable, callback, data);
++        g_task_set_source_tag (task, soup_body_output_stream_close_async);
++        g_task_set_priority (task, priority);
++        /* Do not terminate a body whose preceding chunk failed mid-write. */
++        if (priv->encoding == SOUP_ENCODING_CHUNKED &&
++            priv->chunked_state != SOUP_BODY_OUTPUT_STREAM_STATE_CHUNK_SIZE) {
++                g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_PARTIAL_INPUT,
++                                         "Cannot close an incomplete HTTP chunk");
++        } else {
++                close_async_step (task);
++        }
++        g_object_unref (task);
++}
++
++static gboolean
++soup_body_output_stream_close_finish (GOutputStream *stream, GAsyncResult *result,
++                                      GError **error)
++{
++        if (!g_async_result_is_tagged (result, soup_body_output_stream_close_async))
++                return G_OUTPUT_STREAM_CLASS (soup_body_output_stream_parent_class)->close_finish (
++                        stream, result, error);
++        g_return_val_if_fail (g_task_is_valid (result, stream), FALSE);
++        return g_task_propagate_boolean (G_TASK (result), error);
++}
++
+ static gboolean
+ soup_body_output_stream_is_writable (GPollableOutputStream *stream)
+ {
+@@ -353,6 +440,8 @@
+ 
+ 	output_stream_class->write_fn = soup_body_output_stream_write_fn;
+ 	output_stream_class->close_fn = soup_body_output_stream_close_fn;
++        output_stream_class->close_async = soup_body_output_stream_close_async;
++        output_stream_class->close_finish = soup_body_output_stream_close_finish;
+ 
+         /**
+          * SoupBodyOutputStream::wrote-data:
+--- a/tests/chunk-io-test.c
++++ b/tests/chunk-io-test.c
+@@ -106,6 +106,8 @@
+ 	GFilterOutputStream parent;
+ 
+ 	gboolean is_writable;
++        GThread *required_thread;
++        gboolean fail_writes;
+ } SlowOutputStream;
+ 
+ typedef struct {
+@@ -134,6 +136,15 @@
+ 			  GCancellable   *cancellable,
+ 			  GError        **error)
+ {
++        SlowOutputStream *slow = (SlowOutputStream *)stream;
++        if (slow->required_thread && slow->required_thread != g_thread_self ()) {
++                g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK, "main-context-only stream");
++                return -1;
++        }
++        if (slow->fail_writes) {
++                g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_BROKEN_PIPE, "injected failure");
++                return -1;
++        }
+ 	return g_output_stream_write (G_FILTER_OUTPUT_STREAM (stream)->base_stream,
+ 				      buffer, 1, cancellable, error);
+ }
+@@ -568,6 +579,45 @@
+ 	g_string_free (chunkified, TRUE);
+ }
+ 
++static void
++close_result (GObject *source, GAsyncResult *result, gpointer data)
++{
++        GAsyncResult **saved = data;
++        g_assert_null (*saved);
++        *saved = g_object_ref (result);
++}
++
++static void
++async_chunk_close (gconstpointer data)
++{
++        int mode = GPOINTER_TO_INT (data);
++        GOutputStream *memory = g_memory_output_stream_new_resizable ();
++        SlowOutputStream *slow = g_object_new (slow_output_stream_get_type (), "base-stream", memory, NULL);
++        GOutputStream *body = soup_body_output_stream_new (G_OUTPUT_STREAM (slow), SOUP_ENCODING_CHUNKED, 0);
++        GCancellable *cancel = g_cancellable_new ();
++        GAsyncResult *result = NULL;
++        GError *error = NULL;
++        slow->required_thread = g_thread_self ();
++        slow->fail_writes = mode == 2;
++        g_output_stream_close_async (body, G_PRIORITY_DEFAULT, cancel, close_result, &result);
++        if (mode == 1) g_cancellable_cancel (cancel);
++        while (!result) g_main_context_iteration (NULL, TRUE);
++        gboolean success = g_output_stream_close_finish (body, result, &error);
++        if (mode == 0) {
++                g_assert_true (success);
++                g_assert_no_error (error);
++                g_assert_cmpmem (g_memory_output_stream_get_data (G_MEMORY_OUTPUT_STREAM (memory)),
++                                 g_memory_output_stream_get_data_size (G_MEMORY_OUTPUT_STREAM (memory)), "0\r\n\r\n", 5);
++        } else {
++                g_assert_false (success);
++                int expected = mode == 1 ? G_IO_ERROR_CANCELLED : G_IO_ERROR_BROKEN_PIPE;
++                g_assert_error (error, G_IO_ERROR, expected);
++                g_clear_error (&error);
++        }
++        g_object_unref (result); g_object_unref (cancel);
++        g_object_unref (body); g_object_unref (slow); g_object_unref (memory);
++}
++
+ int
+ main (int argc, char **argv)
+ {
+@@ -576,6 +626,9 @@
+ 	test_init (argc, argv, NULL);
+ 
+ 	g_test_add_func ("/chunk-io", do_io_tests);
++        g_test_add_data_func ("/chunk-close/backpressure", GINT_TO_POINTER (0), async_chunk_close);
++        g_test_add_data_func ("/chunk-close/cancel", GINT_TO_POINTER (1), async_chunk_close);
++        g_test_add_data_func ("/chunk-close/error", GINT_TO_POINTER (2), async_chunk_close);
+ 
+ 	ret = g_test_run ();
+ 
+--- a/tests/streaming-test.c
++++ b/tests/streaming-test.c
+@@ -275,7 +275,11 @@
+ static void
+ do_skip_test (gconstpointer data)
+ {
+-        GUri *base_uri = (GUri *)data;
++        /* skip() is synchronous. Keep the server context running on its own
++         * thread while the client waits, including during async body close. */
++        SoupServer *server = soup_test_server_new (SOUP_TEST_SERVER_IN_THREAD);
++        soup_server_add_handler (server, NULL, server_callback, NULL, NULL);
++        GUri *base_uri = soup_test_server_get_uri (server, "http", NULL);
+         SoupSession *session;
+ 
+         session = soup_test_session_new (NULL);
+@@ -283,6 +287,8 @@
+         do_skip (session, base_uri, "content-length");
+         do_skip (session, base_uri, "eof");
+         soup_test_session_abort_unref (session);
++        g_uri_unref (base_uri);
++        soup_test_server_quit_unref (server);
+ }
+ 
+ int

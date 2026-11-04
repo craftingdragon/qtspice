@@ -66,7 +66,7 @@ Both viewers offer **View → Scaling** (in each Proxmox SPICE console window):
 - **Unfiltered Fit** fits the desktop using nearest-neighbor scaling.
 - **Native 1:1 Pixels** maps each guest pixel to one display pixel, accounting for the screen's device pixel ratio. Smaller desktops are centered; larger desktops have scrollbars. The mouse wheel over the desktop continues going to the guest; use the scrollbars to pan.
 
-The selected mode is remembered separately for each viewer. Native mode pauses automatic guest resizing while preserving the Auto Resize Guest preference; switching back to a fit mode resumes that preference. Snapshots always retain the original guest pixels, independently of the display mode.
+The selected mode is remembered separately for each viewer. Auto Resize Guest works in every scaling mode. Native mode requests the full widget size in physical display pixels, accounting for display scaling; disable Auto Resize Guest to retain a fixed guest resolution. Snapshots always retain the original guest pixels, independently of the display mode.
 
 ### WebDAV shared folders
 
@@ -96,3 +96,31 @@ QTWEBENGINE_CHROMIUM_FLAGS='--enable-logging=stderr --log-level=0' ./build/proxm
 ```
 
 Explicit logging switches in `QTWEBENGINE_CHROMIUM_FLAGS` override the quiet default; unrelated Chromium flags and proxy configuration are preserved. See [Qt WebEngine debugging documentation](https://doc.qt.io/qt-6/qtwebengine-debugging.html).
+
+### Private libsoup fix for incomplete WebDAV downloads
+
+On the tested libspice 0.42/libsoup 3.8.1 combination, a chunked download could deliver all file bytes but omit the final HTTP blank line. curl reported error 18 and Dolphin/KIO could pause near completion. The optional private build patches libsoup's asynchronous response close to finish the trailer on the main context. It does not change the guest or replace system packages.
+
+Initialize the pinned dependency and build it (requires Git, Python 3, patch, Meson, Ninja, a C compiler, GLib development tools including `glib-mkenums`, and libsoup's development dependencies):
+
+```sh
+git submodule update --init third_party/libsoup
+python3 scripts/build-private-libsoup.py
+scripts/with-private-libsoup ./build/proxmox-viewer https://proxmox.example:8006
+# Also works for simple-viewer:
+scripts/with-private-libsoup ./build/simple-viewer connection.vv
+```
+
+The script stages patched sources in `build/libsoup-src`, runs upstream chunk-IO tests, and installs only into `build/libsoup-private`. It does not download Meson fallback dependencies. Ordinary CMake builds and viewer commands continue using system libraries. To roll back, launch the viewer without `scripts/with-private-libsoup`.
+
+To run native protocol regression tests, additionally install `spice-server` development files and OpenSSL's command-line tool, then:
+
+```sh
+cmake -S . -B build -DQTSPICE_BUILD_WEBDAV_INTEGRATION_TESTS=ON
+cmake --build build -j6
+QT_QPA_PLATFORM=offscreen scripts/with-private-libsoup ctest --test-dir build --output-on-failure
+```
+
+These optional tests exercise local SPICE servers, TLS, exact chunk termination, and synthetic 64 MiB downloads. Running them against affected system libsoup is expected to fail. A custom build directory can be passed to the build script; set `QTSPICE_PRIVATE_LIBSOUP_PREFIX` to its `libsoup-private` directory when using the launcher. See [patch details](patches/README.md).
+
+The example viewers route libspice's exact localized “resource temporarily unavailable” warning to `qtspice.transport` debug logging. This is the libspice 0.42 TLS backpressure diagnostic; normal operation retries the write. To inspect these messages, launch with `QT_LOGGING_RULES='qtspice.transport.debug=true'`. Other SPICE warnings, critical assertions (including duplicate cursor initialization), and connection errors remain visible. This policy applies to the example applications; embedding QtSpice does not install a global log handler.

@@ -90,7 +90,7 @@ private Q_SLOTS:
         QCOMPARE(white, 2);
         QCOMPARE(frame.pixelColor(1,1), QColor(Qt::white));
     }
-    void nativeScrollbarsAndResizePause() {
+    void nativeScrollbarsAndGuestResize() {
         QtSpice::Session session;
         QtSpice::Widget widget;
         widget.setSession(&session);
@@ -109,9 +109,18 @@ private Q_SLOTS:
             QCOMPARE(bar->maximum()+bar->pageStep(), total);
             bar->setValue(bar->maximum());
         }
+        QTRY_COMPARE_WITH_TIMEOUT(requests.size(), 1, 1000);
+        QCOMPARE(requests.takeFirst().at(0).toSize(), QSize(qFloor(widget.width() * widget.devicePixelRatioF()),
+                                                        qFloor(widget.height() * widget.devicePixelRatioF())));
+        QVERIFY(widget.autoResizeGuest());
+        widget.setAutoResizeGuest(false);
+        widget.resize(500, 350);
         QTest::qWait(350);
         QCOMPARE(requests.size(), 0);
-        QVERIFY(widget.autoResizeGuest());
+        widget.setAutoResizeGuest(true);
+        QTRY_COMPARE_WITH_TIMEOUT(requests.size(), 1, 1000);
+        QCOMPARE(requests.takeFirst().at(0).toSize(), QSize(qFloor(widget.width() * widget.devicePixelRatioF()),
+                                                        qFloor(widget.height() * widget.devicePixelRatioF())));
         widget.setScalingMode(QtSpice::Widget::ScalingMode::SmoothFit);
         for (auto *bar : bars) { QVERIFY(!bar->isVisible()); QCOMPARE(bar->value(), 0); }
         QTRY_COMPARE_WITH_TIMEOUT(requests.size(), 1, 1000);

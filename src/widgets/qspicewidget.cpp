@@ -33,8 +33,9 @@ Widget::Widget(QWidget *parent) : QWidget(parent) {
     resizeTimer_.setSingleShot(true);
     resizeTimer_.setInterval(250);
     connect(&resizeTimer_, &QTimer::timeout, this, [this] {
-        if (scalingMode_ == ScalingMode::NativePixels || !autoResizeGuest_ || !isVisible() || !session_) return;
-        const QSize requested = size();
+        if (!autoResizeGuest_ || !isVisible() || !session_) return;
+        const QSize requested = scalingMode_ == ScalingMode::NativePixels
+            ? QSize(qFloor(width() * devicePixelRatioF()), qFloor(height() * devicePixelRatioF())) : size();
         if (requested.width() < 320 || requested.height() < 200 || requested.width() > 8192 ||
             requested.height() > 8192 || qint64(requested.width()) * requested.height() > 32 * 1024 * 1024 ||
             requested == lastRequestedSize_) return;
@@ -129,7 +130,6 @@ void Widget::setScalingMode(ScalingMode mode) {
     scalingMode_ = mode;
     resizeTimer_.stop();
     lastRequestedSize_ = {};
-    if (session_ && mode == ScalingMode::NativePixels) session_->setDesiredDisplaySize({});
     updateDisplayGeometry();
     scheduleGuestResize();
     update();
@@ -161,7 +161,11 @@ void Widget::updateDisplayGeometry() {
 }
 bool Widget::event(QEvent *event) {
     const bool result = QWidget::event(event);
-    if (event->type() == QEvent::DevicePixelRatioChange) { updateDisplayGeometry(); update(); }
+    if (event->type() == QEvent::DevicePixelRatioChange) {
+        updateDisplayGeometry();
+        scheduleGuestResize();
+        update();
+    }
     return result;
 }
 bool Widget::autoResizeGuest() const noexcept { return autoResizeGuest_; }
@@ -175,7 +179,7 @@ void Widget::setAutoResizeGuest(bool enabled) {
     Q_EMIT autoResizeGuestChanged(enabled);
 }
 void Widget::scheduleGuestResize() {
-    if (scalingMode_ != ScalingMode::NativePixels && autoResizeGuest_ && session_ && isVisible()) resizeTimer_.start();
+    if (autoResizeGuest_ && session_ && isVisible()) resizeTimer_.start();
 }
 void Widget::releaseMouseGrab() {
 #ifdef QTSPICE_WAYLAND_POINTER_LOCK
