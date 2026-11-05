@@ -130,3 +130,37 @@ The example viewers route libspice's exact localized “resource temporarily una
 Guest audio plays through Qt Multimedia using the host default output device. Playback starts enabled, unmuted, at full local volume. Both viewers provide an **Audio** menu inside the console with Enable Audio, Mute, a volume slider, and playback status. Settings are remembered separately by each viewer; existing consoles remain independent. Local volume is combined with guest volume/mute without changing the guest mixer.
 
 The VM needs a sound device configured to use SPICE audio and a working guest audio driver. Microphone forwarding is not implemented. Missing host devices or unsupported guest PCM formats produce an audio status error while the desktop remains connected. Output follows changes to the default device. Buffering is bounded; latency reporting is an estimate, not a guarantee of precise audio/video synchronization.
+
+### Connection diagnostics
+
+Connection lifecycle logging is quiet by default. Enable `qtspice.connection` to record session state changes, channel creation/destruction, named channel events (including migration switching), and native error domains, codes, and messages:
+
+```sh
+QT_LOGGING_RULES='qtspice.connection.debug=true' QT_MESSAGE_PATTERN='%{time yyyy-MM-dd hh:mm:ss.zzz} %{category}: %{message}' ./build/proxmox-viewer
+```
+
+Use the same environment variables with simple-viewer or the private-libsoup wrapper. Session object addresses distinguish concurrent consoles. Connection configuration, passwords, and proxy URLs are omitted; native error messages may still identify network endpoints. These logs diagnose disconnects; they do not measure bandwidth or change compression/reconnection behavior. To also inspect expected TLS backpressure messages in the example viewers, add `;qtspice.transport.debug=true` to `QT_LOGGING_RULES`.
+
+Pass `--performance-stats` to either viewer for one sample per second per display session, widget, and proxy tunnel (including idle samples). Each sample reports its actual `interval-ms`; a longer interval can indicate an event-loop stall. `counts` reset each interval; `gauges` are current values. Collection and sampling timers are disabled by default, even if the performance logging category is enabled. The option enables that category at startup.
+
+- Display: invalidations, copies, output frame bytes, total copy microseconds, delivered frames, and pending queued frames. Copies include monitor/primary notifications; delivered counts `frameReady` emission, including empty frames.
+- Widget: received frame signals and paint events. Paints can merge several frames or result from window exposure; they are not a video FPS measurement. An attachment line maps widget addresses to session addresses.
+- Proxy: upload/download forwarded and socket-written bytes, plus pending reads/writes in each direction. Down means remote to local client; up means the reverse. Written means accepted by the local socket transport, not acknowledged by the final server. Counters include tunnel protocol bytes, and tunnels may also belong to browser traffic. No proxy URL or ticket is logged.
+
+To collect both connection and performance diagnostics:
+
+```sh
+QT_LOGGING_RULES='qtspice.connection.debug=true;qtspice.performance.debug=true' \
+QT_MESSAGE_PATTERN='%{time yyyy-MM-dd hh:mm:ss.zzz} %{category}: %{message}' \
+scripts/with-private-libsoup ./build/proxmox-viewer --performance-stats https://your-proxmox-host:8006
+```
+
+Compare pending proxy buffers with display invalidations/delivery during a freeze. Pending frames growing indicates queued delivery falling behind; invalidations stopping while audio continues indicates a display-path stall, but does not alone identify the remote server as the cause. Very long sample intervals indicate delayed event-loop execution. These diagnostics do not change buffering, rendering, or compression.
+
+## Keyboard capture
+
+Both viewers offer **Input → Capture Keyboard**, remembered separately per viewer and initially off. With capture enabled, focusing the console requests desktop shortcuts such as Meta/Super and Alt+Tab for the guest. A permanent status label distinguishes waiting, pending compositor approval, active, suspended, and unavailable/failed capture.
+
+**Ctrl+Alt+G releases both keyboard and pointer capture**, releases held guest inputs, and clears console focus. The saved preference stays enabled, but capture remains suspended across focus changes until you click the console again. Turning the toggle off and on also clears suspension. Ordinary focus loss, menus/dialogs, hiding, or disconnecting releases capture; focus return normally resumes it.
+
+Native Wayland uses the compositor keyboard-shortcuts-inhibit protocol with Qt's connection; no GTK widgets are used. The compositor may request permission, reject capture, reserve an escape shortcut, or revoke capture. Revoked inhibitors are not forcibly recreated. Native X11 uses Qt's native window keyboard grab. XWayland behavior remains subject to compositor policy. Unsupported backends retain ordinary input. This does not expand the existing keyboard scancode mapping to every multimedia/vendor key.

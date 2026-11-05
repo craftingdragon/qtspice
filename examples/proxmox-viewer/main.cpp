@@ -7,12 +7,14 @@
 #include "framesnapshot.h"
 #include "../viewersettings.h"
 #include "../scalingmenu.h"
+#include "../inputmenu.h"
 #include "../browserproxy.h"
 #include "../../src/core/tunnelproxy.h"
 #include <QtSpice/QSpiceConnection.h>
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceWidget.h>
 #include <QApplication>
+#include <QLoggingCategory>
 #include <QDebug>
 #include <QCommandLineParser>
 #include <QFile>
@@ -45,6 +47,7 @@ public:
         SharedFolder::addMenu(menuBar(), &session_);
         auto *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
         addScalingMenu(viewMenu, widget);
+        addInputMenu(menuBar(), statusBar(), widget);
         auto *snapshotAction = viewMenu->addAction(QStringLiteral("Save Next Frame…"));
         connect(snapshotAction, &QAction::triggered, this, [this] {
             const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save next guest frame"),
@@ -210,11 +213,14 @@ int main(int argc, char **argv) {
     QCoreApplication::setApplicationName(QStringLiteral("ProxmoxViewer"));
     QCommandLineParser parser;
     parser.addHelpOption();
+    parser.addOption({QStringLiteral("performance-stats"), QStringLiteral("Enable one-second performance diagnostics")});
     SharedFolder::addOptions(parser);
     QCommandLineOption proxy(QStringLiteral("proxy"), QStringLiteral("Proxy for browser and consoles: http://host:port or socks5://host:port"), QStringLiteral("url"));
     parser.addOption(proxy);
     parser.addPositionalArgument(QStringLiteral("url"), QStringLiteral("Proxmox HTTPS URL"));
     parser.process(app);
+    if (parser.isSet(QStringLiteral("performance-stats")))
+        QLoggingCategory::setFilterRules(QStringLiteral("qtspice.performance.debug=true"));
     std::optional<QtSpice::SharedDirectory> sharedDirectory;
     QString sharingError;
     if (!SharedFolder::parse(parser, sharedDirectory, sharingError)) { qCritical().noquote() << sharingError; return 1; }

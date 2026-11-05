@@ -2,10 +2,53 @@
 #include "../src/core/clipboardcapability.h"
 #include <QSignalSpy>
 #include <QtTest>
+#include <QLoggingCategory>
+#include <QScopeGuard>
+
+namespace {
+QStringList connectionMessages;
+void captureConnectionLog(QtMsgType, const QMessageLogContext &context, const QString &message) {
+    if (QString::fromLatin1(context.category) == QStringLiteral("qtspice.connection"))
+        connectionMessages.append(message);
+}
+}
 
 class SessionTest : public QObject {
     Q_OBJECT
 private slots:
+    void connectionDiagnostics() {
+        connectionMessages.clear();
+        const auto previousHandler = qInstallMessageHandler(captureConnectionLog);
+        const auto restore = qScopeGuard([previousHandler] {
+            qInstallMessageHandler(previousHandler);
+            QLoggingCategory::setFilterRules({});
+        });
+        QLoggingCategory::setFilterRules(QStringLiteral("qtspice.connection.debug=false"));
+        {
+            QtSpice::Session session;
+            session.connectToHost(QStringLiteral("127.0.0.1"), 1);
+            session.disconnectFromHost();
+        }
+        QVERIFY(connectionMessages.isEmpty());
+        QLoggingCategory::setFilterRules(QStringLiteral("qtspice.connection.debug=true"));
+        {
+            QtSpice::Session session;
+            QSignalSpy errors(&session, &QtSpice::Session::errorOccurred);
+            QtSpice::ConnectionConfig config;
+            config.host = QStringLiteral("127.0.0.1");
+            config.port = 1;
+            config.password = QStringLiteral("diagnostic-test-secret");
+            session.connectToConfig(config);
+            QTRY_VERIFY_WITH_TIMEOUT(!errors.isEmpty(), 5000);
+        }
+        const QString messages = connectionMessages.join(QLatin1Char('\n'));
+        QVERIFY(messages.contains(QStringLiteral("connection requested")));
+        QVERIFY(messages.contains(QStringLiteral("channel created main id 0")));
+        QVERIFY(messages.contains(QStringLiteral("error-connect")));
+        QVERIFY(messages.contains(QStringLiteral("error-domain")));
+        QVERIFY(messages.contains(QStringLiteral("local teardown requested")));
+        QVERIFY(!messages.contains(QStringLiteral("diagnostic-test-secret")));
+    }
     void clipboardRequiresByDemandCapability() {
         QVERIFY(!QtSpice::clipboardByDemandReady(false, false));
         QVERIFY(!QtSpice::clipboardByDemandReady(true, false));

@@ -1,5 +1,6 @@
 #include "tunnelproxy.h"
 #include "proxyconnection.h"
+#include "intervalstats.h"
 #include <QTcpSocket>
 #include <QNetworkProxy>
 #include <QTimer>
@@ -11,16 +12,23 @@ constexpr qint64 bufferLimit = 256 * 1024;
 class Tunnel final : public QObject {
 public:
     Tunnel(QTcpSocket *client, const QUrl &outer, const QUrl &inner, QObject *parent)
-        : QObject(parent), client_(client), remote_(new QTcpSocket(this)), request_(new ProxyConnection(this)),
+        : QObject(parent), diagnostics_("proxy", this), client_(client), remote_(new QTcpSocket(this)), request_(new ProxyConnection(this)),
           outer_(outer), inner_(inner) {
+        diagnostics_.updateGauges = [this] {
+            diagnostics_.gauge(QStringLiteral("up-read-pending"), quint64(client_->bytesAvailable()));
+            diagnostics_.gauge(QStringLiteral("up-write-pending"), quint64(remote_->bytesToWrite()));
+            diagnostics_.gauge(QStringLiteral("down-read-pending"), quint64(remote_->bytesAvailable()));
+            diagnostics_.gauge(QStringLiteral("down-write-pending"), quint64(client_->bytesToWrite()));
+            diagnostics_.gauge(QStringLiteral("ready"), ready_);
+        };
         client_->setParent(this);
         client_->setReadBufferSize(bufferLimit);
         remote_->setReadBufferSize(bufferLimit);
         remote_->setProxy(QNetworkProxy::NoProxy);
         connect(client_, &QTcpSocket::readyRead, this, [this] { if (ready_) pump(client_, remote_); else if (!connecting_) readHeader(); });
         connect(remote_, &QTcpSocket::readyRead, this, [this] { pump(remote_, client_); });
-        connect(client_, &QTcpSocket::bytesWritten, this, [this] { if (ready_) drainRemote(); });
-        connect(remote_, &QTcpSocket::bytesWritten, this, [this] { if (ready_) pump(client_, remote_); });
+        connect(client_, &QTcpSocket::bytesWritten, this, [this](qint64 bytes) { diagnostics_.add(QStringLiteral("down-written-bytes"), quint64(bytes)); if (ready_) drainRemote(); });
+        connect(remote_, &QTcpSocket::bytesWritten, this, [this](qint64 bytes) { diagnostics_.add(QStringLiteral("up-written-bytes"), quint64(bytes)); if (ready_) pump(client_, remote_); });
         connect(client_, &QTcpSocket::disconnected, this, [this] { deleteLater(); });
         connect(remote_, &QTcpSocket::disconnected, this, [this] {
             remoteEof_ = true;
@@ -45,6 +53,7 @@ public:
         if (client_->bytesAvailable()) readHeader();
     }
 private:
+    IntervalStats diagnostics_;
     QTcpSocket *client_;
     QTcpSocket *remote_;
     ProxyConnection *request_;
@@ -120,10 +129,13 @@ private:
         connecting_ = true;
         request_->start(host, quint16(port), outer_, inner_);
     }
-    static void pump(QTcpSocket *from, QTcpSocket *to) {
+    void pump(QTcpSocket *from, QTcpSocket *to) {
         if (to->state() != QAbstractSocket::ConnectedState) return;
         const auto room = bufferLimit - to->bytesToWrite();
-        if (room > 0 && from->bytesAvailable()) to->write(from->read(room));
+        if (room > 0 && from->bytesAvailable()) {
+            const auto written = to->write(from->read(room));
+            if (written > 0) diagnostics_.add(from == client_ ? QStringLiteral("up-forwarded-bytes") : QStringLiteral("down-forwarded-bytes"), quint64(written));
+        }
     }
 };
 }

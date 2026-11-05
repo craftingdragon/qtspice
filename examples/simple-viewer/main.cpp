@@ -5,7 +5,9 @@
 #include <QtSpice/QSpiceWidget.h>
 #include "../viewersettings.h"
 #include "../scalingmenu.h"
+#include "../inputmenu.h"
 #include <QApplication>
+#include <QLoggingCategory>
 #include <QCommandLineParser>
 #include <QMessageBox>
 #include <QUrl>
@@ -23,6 +25,7 @@ int main(int argc, char **argv) {
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("QtSpice direct SPICE viewer"));
     parser.addHelpOption();
+    parser.addOption({QStringLiteral("performance-stats"), QStringLiteral("Enable one-second performance diagnostics")});
     SharedFolder::addOptions(parser);
     QCommandLineOption snapshot(QStringLiteral("snapshot"), QStringLiteral("Save the first received frame and exit"), QStringLiteral("path"));
     parser.addOption(snapshot);
@@ -30,6 +33,8 @@ int main(int argc, char **argv) {
     parser.addOption(proxy);
     parser.addPositionalArgument(QStringLiteral("target"), QStringLiteral("spice://host:port or connection.vv"));
     parser.process(app);
+    if (parser.isSet(QStringLiteral("performance-stats")))
+        QLoggingCategory::setFilterRules(QStringLiteral("qtspice.performance.debug=true"));
     std::optional<QtSpice::SharedDirectory> sharedDirectory;
     QString sharingError;
     if (!SharedFolder::parse(parser, sharedDirectory, sharingError)) { qCritical().noquote() << sharingError; return 1; }
@@ -64,6 +69,7 @@ int main(int argc, char **argv) {
     SharedFolder::addMenu(window.menuBar(), &session);
     auto *viewMenu = window.menuBar()->addMenu(QStringLiteral("View"));
     addScalingMenu(viewMenu, widget);
+    addInputMenu(window.menuBar(), window.statusBar(), widget);
     auto *resizeAction = viewMenu->addAction(QStringLiteral("Auto Resize Guest"));
     resizeAction->setCheckable(true);
     resizeAction->setChecked(ViewerSettings::autoResizeGuest());

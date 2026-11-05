@@ -3,6 +3,7 @@
 #include <QtSpice/QSpiceDisplay.h>
 #include "clipboardbridge.h"
 #include "displaygeometry.h"
+#include "../core/intervalstats.h"
 #include <QScrollBar>
 #include <QStyle>
 #include <QEvent>
@@ -15,12 +16,31 @@
 #include <QFocusEvent>
 #include <QHideEvent>
 #include <cmath>
+#include <QWindow>
+#include <QApplication>
+#include <QMenu>
+#ifdef QTSPICE_WAYLAND_KEYBOARD_CAPTURE
+#include "keyboardcapture.h"
+#else
+namespace QtSpice { class KeyboardCapture {}; }
+#endif
 #ifdef QTSPICE_WAYLAND_POINTER_LOCK
 #include "waylandpointerlock.h"
 #endif
 
 namespace QtSpice {
-Widget::Widget(QWidget *parent) : QWidget(parent) {
+Widget::Widget(QWidget *parent) : QWidget(parent), diagnostics_(std::make_unique<IntervalStats>("widget", this)) {
+#ifdef QTSPICE_WAYLAND_KEYBOARD_CAPTURE
+    if (QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))) {
+        keyboardCapture_ = std::make_unique<KeyboardCapture>([this](bool active) {
+            if (!active && session_) session_->releaseAllInputs();
+            setKeyboardCaptureState(active ? KeyboardCaptureState::Active : KeyboardCaptureState::Failed);
+        });
+        keyboardCapture_->availabilityChanged = [this] { updateKeyboardCapture(); };
+    }
+#endif
+    qApp->installEventFilter(this);
+    connect(qGuiApp, &QGuiApplication::focusWindowChanged, this, [this] { updateKeyboardCapture(); });
     horizontal_ = new QScrollBar(Qt::Horizontal, this);
     vertical_ = new QScrollBar(Qt::Vertical, this);
     horizontal_->hide();
@@ -66,8 +86,9 @@ Widget::Widget(QWidget *parent) : QWidget(parent) {
     }
 #endif
 }
-Widget::~Widget() { releaseMouseGrab(); }
+Widget::~Widget() { stopKeyboardCapture(); if (session_) session_->releaseAllInputs(); releaseMouseGrab(); }
 void Widget::setSession(Session *session) {
+    stopKeyboardCapture();
     resizeTimer_.stop();
     if (session_ && session_ != session) session_->setDesiredDisplaySize({});
     lastRequestedSize_ = {};
@@ -82,21 +103,24 @@ void Widget::setSession(Session *session) {
         disconnect(clipboardBridge_.get(), nullptr, session_, nullptr);
     }
     session_ = session;
+    qCDebug(performanceLog) << "widget" << this << "attached session" << session;
     frame_ = {};
     updateDisplayGeometry();
     statusText_ = QStringLiteral("Disconnected");
     update();
-    if (!session_) return;
+    if (!session_) { updateKeyboardCapture(); return; }
+    connect(session_, &QObject::destroyed, this, [this] { stopKeyboardCapture(); updateKeyboardCapture(); });
     scheduleGuestResize();
     connect(clipboardBridge_.get(), &ClipboardBridge::hostTextChanged, session_, &Session::setHostClipboardText);
     connect(session_, &Session::guestClipboardText, clipboardBridge_.get(), &ClipboardBridge::applyGuestText);
     connect(session_, &Session::clipboardReadyChanged, clipboardBridge_.get(), &ClipboardBridge::setActive);
     clipboardBridge_->setActive(session_->clipboardReady());
-    connect(session_, &Session::frameReady, this, [this](const QImage &image) { frame_ = image; updateDisplayGeometry(); updateGeometry(); update(); });
+    connect(session_, &Session::frameReady, this, [this](const QImage &image) { diagnostics_->add(QStringLiteral("received")); frame_ = image; updateDisplayGeometry(); updateGeometry(); update(); });
     connect(session_, &Session::stateChanged, this, [this](Session::State state) {
         if (state == Session::State::Connecting) statusText_ = QStringLiteral("Connecting…");
         else if (state == Session::State::Connected) statusText_ = QStringLiteral("Waiting for display…");
         else { statusText_ = QStringLiteral("Disconnected"); frame_ = {}; updateDisplayGeometry(); releaseMouseGrab(); }
+        updateKeyboardCapture();
         update();
     });
     connect(session_, &Session::errorOccurred, this, [this](const QString &message) {
@@ -119,7 +143,9 @@ void Widget::setSession(Session *session) {
     });
     connect(session_, &Session::inputReadyChanged, this, [this](bool ready) {
         if (!ready) releaseMouseGrab();
+        updateKeyboardCapture();
     });
+    updateKeyboardCapture();
 }
 Widget::ScalingMode Widget::scalingMode() const noexcept { return scalingMode_; }
 void Widget::setScalingMode(ScalingMode mode) {
@@ -160,6 +186,17 @@ void Widget::updateDisplayGeometry() {
     vertical_->setRange(0, v ? std::max(0, frame_.height()-vertical_->pageStep()) : 0);
 }
 bool Widget::event(QEvent *event) {
+    if (event->type() == QEvent::ShortcutOverride &&
+        (keyboardRequested_ || mouseGrabbed_)) {
+        auto *key = static_cast<QKeyEvent *>(event);
+        if (keyboardRequested_ || (key->key() == Qt::Key_G && key->modifiers().testFlag(Qt::ControlModifier) && key->modifiers().testFlag(Qt::AltModifier))) {
+            event->accept();
+            return true;
+        }
+    }
+    if (event->type() == QEvent::KeyPress && keyboardRequested_) { keyPressEvent(static_cast<QKeyEvent *>(event)); return true; }
+    if (event->type() == QEvent::KeyRelease && keyboardRequested_) { keyReleaseEvent(static_cast<QKeyEvent *>(event)); return true; }
+    if (event->type() == QEvent::WindowDeactivate || event->type() == QEvent::PlatformSurface) stopKeyboardCapture();
     const bool result = QWidget::event(event);
     if (event->type() == QEvent::DevicePixelRatioChange) {
         updateDisplayGeometry();
@@ -194,6 +231,8 @@ void Widget::releaseMouseGrab() {
 }
 QSize Widget::sizeHint() const { return frame_.isNull() ? QSize(800, 600) : frame_.size(); }
 void Widget::paintEvent(QPaintEvent *) {
+    diagnostics_->add(QStringLiteral("paints"));
+
     QPainter painter(this);
     painter.fillRect(rect(), Qt::black);
     if (!frame_.isNull()) {
@@ -244,6 +283,9 @@ void Widget::mouseMoveEvent(QMouseEvent *event) {
     }
 }
 void Widget::mousePressEvent(QMouseEvent *event) {
+    keyboardSuspended_ = false;
+    setFocus(Qt::MouseFocusReason);
+    updateKeyboardCapture();
     if (!QRectF(QPointF(), QSizeF(contentSize_)).contains(event->position())) return;
     setFocus();
     bool justGrabbed = false;
@@ -286,26 +328,33 @@ void Widget::wheelEvent(QWheelEvent *event) {
     event->accept();
 }
 void Widget::keyPressEvent(QKeyEvent *event) {
-    if (mouseGrabbed_ && event->key() == Qt::Key_G &&
+    if ((mouseGrabbed_ || keyboardRequested_) && !event->modifiers().testFlag(Qt::GroupSwitchModifier) && event->key() == Qt::Key_G &&
         (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier)) == (Qt::ControlModifier | Qt::AltModifier)) {
-        if (session_) session_->releaseAllInputs();
-        releaseMouseGrab();
+        releaseInputCapture();
         event->accept();
         return;
     }
+    if (keyboardSuspended_) { event->ignore(); return; }
     if (session_ && !event->isAutoRepeat()) session_->sendKey(nativeXtScanCode(event->nativeScanCode(), event->key()), true);
     event->accept();
 }
 void Widget::keyReleaseEvent(QKeyEvent *event) {
+    if (keyboardSuspended_) { event->ignore(); return; }
     if (session_ && !event->isAutoRepeat()) session_->sendKey(nativeXtScanCode(event->nativeScanCode(), event->key()), false);
     event->accept();
 }
+void Widget::focusInEvent(QFocusEvent *event) {
+    QWidget::focusInEvent(event);
+    updateKeyboardCapture();
+}
 void Widget::focusOutEvent(QFocusEvent *event) {
+    stopKeyboardCapture();
     if (session_) session_->releaseAllInputs();
     releaseMouseGrab();
     QWidget::focusOutEvent(event);
 }
 void Widget::hideEvent(QHideEvent *event) {
+    stopKeyboardCapture();
     resizeTimer_.stop();
     if (session_ && autoResizeGuest_) session_->setDesiredDisplaySize({});
     lastRequestedSize_ = {};
@@ -316,10 +365,78 @@ void Widget::hideEvent(QHideEvent *event) {
 void Widget::showEvent(QShowEvent *event) {
     QWidget::showEvent(event);
     scheduleGuestResize();
+    updateKeyboardCapture();
 }
 void Widget::resizeEvent(QResizeEvent *event) {
     QWidget::resizeEvent(event);
     updateDisplayGeometry();
     scheduleGuestResize();
+}
+}
+
+namespace QtSpice {
+bool Widget::eventFilter(QObject *object, QEvent *event) {
+    if (auto *menu = qobject_cast<QMenu *>(object); menu && menu->parentWidget() && menu->parentWidget()->window() == window()) {
+        // Popup menus can leave QWidget focus unchanged; explicitly release grabs.
+        if (event->type() == QEvent::Show) {
+            stopKeyboardCapture();
+            if (session_) session_->releaseAllInputs();
+            releaseMouseGrab();
+        }
+        if (event->type() == QEvent::Hide) QTimer::singleShot(0, this, [this] { updateKeyboardCapture(); });
+    }
+    return QWidget::eventFilter(object, event);
+}
+void Widget::setKeyboardCaptureState(KeyboardCaptureState state) {
+    if (keyboardCaptureState_ == state) return;
+    keyboardCaptureState_ = state;
+    static const QLoggingCategory captureLog("qtspice.input", QtWarningMsg);
+    qCDebug(captureLog) << "keyboard capture" << this << state;
+    Q_EMIT keyboardCaptureStateChanged(state);
+}
+void Widget::stopKeyboardCapture() {
+#ifdef QTSPICE_WAYLAND_KEYBOARD_CAPTURE
+    if (keyboardCapture_) keyboardCapture_->release();
+#endif
+    if (keyboardRequested_ && QGuiApplication::platformName() == QStringLiteral("xcb") && window()->windowHandle())
+        window()->windowHandle()->setKeyboardGrabEnabled(false);
+    if (keyboardRequested_ && session_) session_->releaseAllInputs();
+    keyboardRequested_ = false;
+    setKeyboardCaptureState(!keyboardCaptureEnabled_ ? KeyboardCaptureState::Disabled :
+        keyboardSuspended_ ? KeyboardCaptureState::Suspended : KeyboardCaptureState::WaitingForFocus);
+}
+void Widget::updateKeyboardCapture() {
+    if (!keyboardCaptureEnabled_ || keyboardSuspended_ || !session_ || !session_->inputReady() || !hasFocus() || !isVisible() || !window()->isActiveWindow() || QApplication::activePopupWidget() || QApplication::activeModalWidget()) {
+        stopKeyboardCapture();
+        return;
+    }
+    if (keyboardRequested_) return;
+    const auto platform = QGuiApplication::platformName();
+#ifdef QTSPICE_WAYLAND_KEYBOARD_CAPTURE
+    if (keyboardCapture_) {
+        if (!keyboardCapture_->available()) { setKeyboardCaptureState(KeyboardCaptureState::Unavailable); return; }
+        keyboardRequested_ = keyboardCapture_->request(window()->windowHandle());
+        setKeyboardCaptureState(keyboardRequested_ ? KeyboardCaptureState::Pending : KeyboardCaptureState::Failed);
+        return;
+    }
+#endif
+    if (platform == QStringLiteral("xcb")) {
+        keyboardRequested_ = window()->windowHandle() && window()->windowHandle()->setKeyboardGrabEnabled(true);
+        setKeyboardCaptureState(keyboardRequested_ ? KeyboardCaptureState::Active : KeyboardCaptureState::Failed);
+    } else setKeyboardCaptureState(KeyboardCaptureState::Unavailable);
+}
+void Widget::setKeyboardCaptureEnabled(bool enabled) {
+    if (keyboardCaptureEnabled_ == enabled) return;
+    keyboardCaptureEnabled_ = enabled;
+    keyboardSuspended_ = false;
+    updateKeyboardCapture();
+    Q_EMIT keyboardCaptureEnabledChanged(enabled);
+}
+void Widget::releaseInputCapture() {
+    keyboardSuspended_ = keyboardCaptureEnabled_;
+    stopKeyboardCapture();
+    if (session_) session_->releaseAllInputs();
+    releaseMouseGrab();
+    clearFocus();
 }
 }

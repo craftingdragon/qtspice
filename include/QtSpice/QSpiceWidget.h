@@ -13,9 +13,17 @@ namespace QtSpice {
 class Session;
 class WaylandPointerLock;
 class ClipboardBridge;
+class IntervalStats;
+class KeyboardCapture;
 class Widget final : public QWidget {
     Q_OBJECT
 public:
+    enum class KeyboardCaptureState { Disabled, WaitingForFocus, Pending, Active, Suspended, Unavailable, Failed };
+    Q_ENUM(KeyboardCaptureState)
+    bool keyboardCaptureEnabled() const { return keyboardCaptureEnabled_; }
+    void setKeyboardCaptureEnabled(bool enabled);
+    KeyboardCaptureState keyboardCaptureState() const { return keyboardCaptureState_; }
+    void releaseInputCapture();
     enum class ScalingMode { SmoothFit, UnfilteredFit, NativePixels };
     Q_ENUM(ScalingMode)
     ScalingMode scalingMode() const noexcept;
@@ -27,6 +35,8 @@ public:
     void setAutoResizeGuest(bool enabled);
     QSize sizeHint() const override;
 Q_SIGNALS:
+    void keyboardCaptureEnabledChanged(bool enabled);
+    void keyboardCaptureStateChanged(QtSpice::Widget::KeyboardCaptureState state);
     void scalingModeChanged(ScalingMode mode);
     void autoResizeGuestChanged(bool enabled);
     void guestResizeRequested(QSize size);
@@ -39,11 +49,23 @@ protected:
     void wheelEvent(QWheelEvent *) override;
     void keyPressEvent(QKeyEvent *) override;
     void keyReleaseEvent(QKeyEvent *) override;
+    void focusInEvent(QFocusEvent *) override;
     void focusOutEvent(QFocusEvent *) override;
     void hideEvent(QHideEvent *) override;
     void showEvent(QShowEvent *) override;
     void resizeEvent(QResizeEvent *) override;
 private:
+    friend struct WidgetTestAccess;
+    bool eventFilter(QObject *, QEvent *) override;
+    bool keyboardCaptureEnabled_ = false;
+    bool keyboardSuspended_ = false;
+    bool keyboardRequested_ = false;
+    KeyboardCaptureState keyboardCaptureState_ = KeyboardCaptureState::Disabled;
+    std::unique_ptr<KeyboardCapture> keyboardCapture_;
+    void updateKeyboardCapture();
+    void stopKeyboardCapture();
+    void setKeyboardCaptureState(KeyboardCaptureState state);
+    std::unique_ptr<IntervalStats> diagnostics_;
     ScalingMode scalingMode_ = ScalingMode::SmoothFit;
     QScrollBar *horizontal_;
     QScrollBar *vertical_;

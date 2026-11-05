@@ -6,11 +6,94 @@
 #include <QTemporaryDir>
 #include <QSettings>
 #include "../examples/scalingmenu.h"
+#include "../examples/inputmenu.h"
 #include "../src/widgets/displaygeometry.h"
 
+namespace QtSpice {
+struct WidgetTestAccess {
+    static void simulateCapture(Widget &widget) {
+        widget.keyboardRequested_ = true;
+        widget.setKeyboardCaptureState(Widget::KeyboardCaptureState::Active);
+    }
+};
+}
 class WidgetTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void keyboardEscapeAndShortcuts() {
+        using S = QtSpice::Widget::KeyboardCaptureState;
+        QtSpice::Widget widget;
+        widget.setKeyboardCaptureEnabled(true);
+        QtSpice::WidgetTestAccess::simulateCapture(widget);
+        QKeyEvent shortcut(QEvent::ShortcutOverride, Qt::Key_Tab, Qt::AltModifier);
+        shortcut.ignore();
+        QCoreApplication::sendEvent(&widget, &shortcut);
+        QVERIFY(shortcut.isAccepted());
+        QKeyEvent escape(QEvent::KeyPress, Qt::Key_G, Qt::ControlModifier | Qt::AltModifier);
+        QCoreApplication::sendEvent(&widget, &escape);
+        QCOMPARE(widget.keyboardCaptureState(), S::Suspended);
+        QVERIFY(widget.keyboardCaptureEnabled());
+        QKeyEvent trailing(QEvent::KeyRelease, Qt::Key_G, Qt::NoModifier);
+        QCoreApplication::sendEvent(&widget, &trailing);
+        QCOMPARE(widget.keyboardCaptureState(), S::Suspended);
+        QKeyEvent ordinary(QEvent::ShortcutOverride, Qt::Key_Tab, Qt::AltModifier);
+        ordinary.ignore();
+        QCoreApplication::sendEvent(&widget, &ordinary);
+        QVERIFY(!ordinary.isAccepted());
+        QtSpice::WidgetTestAccess::simulateCapture(widget);
+        QKeyEvent altgr(QEvent::KeyPress, Qt::Key_G, Qt::ControlModifier | Qt::AltModifier | Qt::GroupSwitchModifier);
+        QCoreApplication::sendEvent(&widget, &altgr);
+        QCOMPARE(widget.keyboardCaptureState(), S::Active);
+        widget.releaseInputCapture();
+    }
+    void keyboardCaptureLifecycle() {
+        using S = QtSpice::Widget::KeyboardCaptureState;
+        QtSpice::Widget widget;
+        QCOMPARE(widget.keyboardCaptureState(), S::Disabled);
+        QSignalSpy preference(&widget, &QtSpice::Widget::keyboardCaptureEnabledChanged);
+        widget.setKeyboardCaptureEnabled(true);
+        QCOMPARE(preference.size(), 1);
+        QCOMPARE(widget.keyboardCaptureState(), S::WaitingForFocus);
+        widget.releaseInputCapture();
+        QVERIFY(widget.keyboardCaptureEnabled());
+        QCOMPARE(widget.keyboardCaptureState(), S::Suspended);
+        widget.show();
+        widget.setFocus();
+        QCoreApplication::processEvents();
+        QCOMPARE(widget.keyboardCaptureState(), S::Suspended);
+        QTest::mouseClick(&widget, Qt::LeftButton);
+        QCOMPARE(widget.keyboardCaptureState(), S::WaitingForFocus);
+        widget.releaseInputCapture();
+        widget.setKeyboardCaptureEnabled(false);
+        QCOMPARE(widget.keyboardCaptureState(), S::Disabled);
+        widget.setKeyboardCaptureEnabled(false);
+        QCOMPARE(preference.size(), 2);
+    }
+    void keyboardCaptureMenu() {
+        QTemporaryDir dir;
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        QCoreApplication::setOrganizationName(QStringLiteral("CaptureTest"));
+        QCoreApplication::setApplicationName(QStringLiteral("viewer"));
+        QSettings().clear();
+        QtSpice::Widget widget;
+        QMenuBar menu;
+        QStatusBar status;
+        addInputMenu(&menu, &status, &widget);
+        auto *action = menu.actions().first()->menu()->actions().first();
+        QVERIFY(!action->isChecked());
+        action->trigger();
+        QVERIFY(widget.keyboardCaptureEnabled());
+        widget.releaseInputCapture();
+        QVERIFY(action->isChecked());
+        QtSpice::Widget second;
+        QMenuBar secondMenu;
+        addInputMenu(&secondMenu, &status, &second);
+        QVERIFY(second.keyboardCaptureEnabled());
+        widget.setKeyboardCaptureEnabled(false);
+        QVERIFY(!action->isChecked());
+        QVERIFY(second.keyboardCaptureEnabled());
+    }
     void scalingMenu() {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());

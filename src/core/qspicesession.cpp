@@ -16,10 +16,27 @@ namespace { constexpr qsizetype maxClipboardBytes = 4 * 1024 * 1024; }
 
 Q_LOGGING_CATEGORY(inputLog, "qtspice.input", QtWarningMsg)
 Q_LOGGING_CATEGORY(displayLog, "qtspice.display", QtWarningMsg)
+Q_LOGGING_CATEGORY(connectionLog, "qtspice.connection", QtWarningMsg)
+
+namespace {
+const char *channelEventName(SpiceChannelEvent event) {
+    switch (event) {
+    case SPICE_CHANNEL_OPENED: return "opened";
+    case SPICE_CHANNEL_SWITCHING: return "switching";
+    case SPICE_CHANNEL_CLOSED: return "closed";
+    case SPICE_CHANNEL_ERROR_CONNECT: return "error-connect";
+    case SPICE_CHANNEL_ERROR_TLS: return "error-tls";
+    case SPICE_CHANNEL_ERROR_LINK: return "error-link";
+    case SPICE_CHANNEL_ERROR_AUTH: return "error-auth";
+    case SPICE_CHANNEL_ERROR_IO: return "error-io";
+    default: return "unknown";
+    }
+}
+}
 
 namespace QtSpice {
 
-Session::Worker::Worker(Session *o) : audio(o), owner(o) {}
+Session::Worker::Worker(Session *o) : diagnostics("display", o), audio(o), owner(o) {}
 
 Session::Worker::~Worker() {
     disconnect();
@@ -36,6 +53,7 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
     g_signal_connect(channel, "channel-event", G_CALLBACK(onChannelEvent), self);
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
+    qCDebug(connectionLog) << self->owner << "channel created" << spice_channel_type_to_string(type) << "id" << id;
     if (SPICE_IS_WEBDAV_CHANNEL(channel)) {
         self->webdav.insert(channel);
         g_signal_connect(channel, "notify::port-opened", G_CALLBACK(+[](GObject *, GParamSpec *, gpointer data) {
@@ -85,6 +103,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     auto *self = static_cast<Worker *>(data);
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
+    qCDebug(connectionLog) << self->owner << "channel destroyed" << spice_channel_type_to_string(type) << "id" << id;
     self->audio.detach(channel);
     self->webdav.remove(channel);
     self->webdavOpened.remove(channel);
@@ -113,6 +132,8 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
 
 void Session::Worker::onDisplayChanged(SpiceChannel *channel, gpointer data) {
     auto *self = static_cast<Worker *>(data);
+    QElapsedTimer copyTime;
+    if (self->diagnostics.enabled()) copyTime.start();
     SpiceDisplayPrimary primary{};
     QImage image;
     if (spice_display_channel_get_primary(channel, 0, &primary)) {
@@ -122,10 +143,21 @@ void Session::Worker::onDisplayChanged(SpiceChannel *channel, gpointer data) {
         if (monitors) g_array_unref(monitors);
         qCDebug(displayLog) << "surface" << QSize(primary.width, primary.height) << "visible monitor" << image.size();
     }
-    QMetaObject::invokeMethod(self->owner, [owner = self->owner, image] { Q_EMIT owner->frameReady(image); }, Qt::QueuedConnection);
+    self->diagnostics.add(QStringLiteral("copies"));
+    if (copyTime.isValid()) self->diagnostics.add(QStringLiteral("copy-us"), quint64(copyTime.nsecsElapsed() / 1000));
+    self->diagnostics.add(QStringLiteral("frame-bytes"), quint64(image.sizeInBytes()));
+    ++self->pendingFrames;
+    self->diagnostics.gauge(QStringLiteral("pending-frames"), self->pendingFrames);
+    QMetaObject::invokeMethod(&self->diagnostics, [self, image] {
+        --self->pendingFrames;
+        self->diagnostics.gauge(QStringLiteral("pending-frames"), self->pendingFrames);
+        self->diagnostics.add(QStringLiteral("delivered"));
+        Q_EMIT self->owner->frameReady(image);
+    }, Qt::QueuedConnection);
 }
 
 void Session::Worker::onInvalidate(SpiceChannel *channel, gint, gint, gint, gint, gpointer data) {
+    static_cast<Worker *>(data)->diagnostics.add(QStringLiteral("invalidations"));
     onDisplayChanged(channel, data);
 }
 
@@ -225,8 +257,14 @@ gboolean Session::Worker::onClipboardRequest(SpiceMainChannel *channel, guint se
 
 void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent event, gpointer data) {
     auto *self = static_cast<Worker *>(data);
-    int type = 0;
-    g_object_get(channel, "channel-type", &type, nullptr);
+    int type = 0, id = 0;
+    g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
+    const GError *channelError = spice_channel_get_error(channel);
+    qCDebug(connectionLog) << self->owner << "channel event" << spice_channel_type_to_string(type)
+        << "id" << id << channelEventName(event) << "code" << int(event)
+        << "error-domain" << (channelError ? g_quark_to_string(channelError->domain) : "none")
+        << "error-code" << (channelError ? channelError->code : 0)
+        << "message" << (channelError ? channelError->message : "none");
     if (channel == SPICE_CHANNEL(self->inputs)) {
         if (event == SPICE_CHANNEL_OPENED) self->inputsReady = true;
         else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) {
@@ -269,6 +307,10 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
 
 void Session::Worker::connectToConfig(const ConnectionConfig &config) {
     disconnect();
+    // Do not log connection configuration: Proxmox proxy URLs can contain tickets.
+    qCDebug(connectionLog) << owner << "connection requested" << "plain-port" << bool(config.port)
+        << "tls-port" << bool(config.tlsPort) << "network-proxy" << !config.networkProxy.isEmpty()
+        << "spice-proxy" << !config.proxy.isEmpty();
     QUrl proxyUrl;
     if (!config.networkProxy.isEmpty() || !config.proxy.isEmpty()) {
         proxy = std::make_unique<TunnelProxy>();
@@ -311,6 +353,7 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
     g_signal_connect(session, "channel-new", G_CALLBACK(onChannelNew), this);
     g_signal_connect(session, "channel-destroy", G_CALLBACK(onChannelDestroy), this);
     if (!spice_session_connect(session)) {
+        qCDebug(connectionLog) << owner << "connection start rejected";
         QMetaObject::invokeMethod(owner, [owner = owner] {
             owner->setState(State::Disconnected);
             Q_EMIT owner->errorOccurred(QStringLiteral("Could not start SPICE connection"));
@@ -319,6 +362,7 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
 }
 
 void Session::Worker::disconnect() {
+    if (session) qCDebug(connectionLog) << owner << "local teardown requested";
     audio.detach();
     ++sharingGeneration;
     webdav.clear();
@@ -482,6 +526,7 @@ bool Session::clipboardReady() const noexcept { return clipboardReady_; }
 
 void Session::setState(State state) {
     if (state_ == state) return;
+    qCDebug(connectionLog) << this << "state" << state_ << "->" << state;
     state_ = state;
     Q_EMIT stateChanged(state);
 }

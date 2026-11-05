@@ -7,6 +7,7 @@
 #include <QSet>
 #include "tunnelproxy.h"
 #include "qspiceaudio.h"
+#include "intervalstats.h"
 
 struct QtSpice::Session::Worker {
     explicit Worker(Session *owner);
@@ -17,6 +18,8 @@ struct QtSpice::Session::Worker {
     static void onChannelNew(SpiceSession *, SpiceChannel *, gpointer);
     static void onChannelDestroy(SpiceSession *, SpiceChannel *, gpointer);
     static void onChannelEvent(SpiceChannel *, SpiceChannelEvent, gpointer);
+    IntervalStats diagnostics;
+    quint64 pendingFrames = 0;
     AudioPlayback audio;
     std::unique_ptr<QtSpice::TunnelProxy> proxy;
 
