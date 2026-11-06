@@ -71,6 +71,9 @@ target_link_libraries(proxmox-viewer PRIVATE QtSpice Qt6::WebEngineWidgets Qt6::
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(fullscreen_test tests/fullscreen_test.cpp)
+  target_link_libraries(fullscreen_test PRIVATE QtSpice Qt6::Test)
+  add_test(NAME fullscreen_test COMMAND fullscreen_test)
   add_executable(intervalstats_test tests/intervalstats_test.cpp)
   target_link_libraries(intervalstats_test PRIVATE Qt6::Core Qt6::Test)
   add_test(NAME intervalstats_test COMMAND intervalstats_test --performance-stats)

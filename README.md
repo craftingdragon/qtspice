@@ -60,6 +60,12 @@ Inside each Proxmox SPICE console window, choose **View → Save Next Frame…**
 
 ## Display scaling
 
+Both viewers provide **View → Fullscreen** (**F11**) in the console window. Fullscreen uses the window's current screen, hides the menu/status bars, with no floating controls. Leaving restores the previous window geometry or maximized state and bar visibility. Each console controls fullscreen independently; it starts windowed.
+
+When keyboard capture is active, F11 is sent to the guest. Press **Ctrl+Alt+Enter** (including keypad Enter) to exit fullscreen directly, even during keyboard capture. Alternatively, release input with **Ctrl+Alt+G**, then press **F11**. Entering or leaving fullscreen releases held inputs and suspends capture until the next console click, preserving the Capture Keyboard preference. Auto Resize Guest and the selected scaling mode continue to apply; disable Auto Resize Guest to keep a fixed guest resolution.
+
+Both viewers offer **View → Show Menu at Top Edge**, disabled by default and remembered separately per viewer. In fullscreen, move the pointer to the top edge to slide the menu over the console without resizing the guest. Revealing the menu releases input capture; click the console to capture again. With relative pointer capture, release it with **Ctrl+Alt+G** before moving to the edge.
+
 Both viewers offer **View → Scaling** (in each Proxmox SPICE console window):
 
 - **Smooth Fit** is the default. It preserves aspect ratio and filters scaled frames for cleaner text and edges.

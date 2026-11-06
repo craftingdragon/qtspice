@@ -8,6 +8,7 @@
 #include "../viewersettings.h"
 #include "../scalingmenu.h"
 #include "../inputmenu.h"
+#include "../fullscreen.h"
 #include "../browserproxy.h"
 #include "../../src/core/tunnelproxy.h"
 #include <QtSpice/QSpiceConnection.h>
@@ -48,6 +49,7 @@ public:
         auto *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
         addScalingMenu(viewMenu, widget);
         addInputMenu(menuBar(), statusBar(), widget);
+        new Fullscreen(this, viewMenu, widget);
         auto *snapshotAction = viewMenu->addAction(QStringLiteral("Save Next Frame…"));
         connect(snapshotAction, &QAction::triggered, this, [this] {
             const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save next guest frame"),

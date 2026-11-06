@@ -30,7 +30,9 @@ private Q_SLOTS:
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
         QCoreApplication::setOrganizationName(QStringLiteral("QtSpiceTest"));
         QCoreApplication::setApplicationName(QStringLiteral("simple-viewer"));
+        QVERIFY(!ViewerSettings::fullscreenEdgeMenu());
         QCOMPARE(ViewerSettings::scalingMode(), 0);
+        ViewerSettings::setFullscreenEdgeMenu(true);
         ViewerSettings::setScalingMode(2);
         QCOMPARE(ViewerSettings::scalingMode(), 2);
         QVERIFY(ViewerSettings::autoResizeGuest());
@@ -38,12 +40,14 @@ private Q_SLOTS:
         QVERIFY(!ViewerSettings::autoResizeGuest());
         QCoreApplication::setApplicationName(QStringLiteral("ProxmoxViewer"));
         QVERIFY(ViewerSettings::autoResizeGuest());
+        QVERIFY(!ViewerSettings::fullscreenEdgeMenu());
         QCOMPARE(ViewerSettings::scalingMode(), 0);
         ViewerSettings::setScalingMode(99);
         QCOMPARE(ViewerSettings::scalingMode(), 0);
         ViewerSettings::setAutoResizeGuest(true);
         QCoreApplication::setApplicationName(QStringLiteral("simple-viewer"));
         QVERIFY(!ViewerSettings::autoResizeGuest());
+        QVERIFY(ViewerSettings::fullscreenEdgeMenu());
     }
 };
 QTEST_GUILESS_MAIN(ViewerSettingsTest)

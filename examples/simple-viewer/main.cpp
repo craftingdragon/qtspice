@@ -6,6 +6,7 @@
 #include "../viewersettings.h"
 #include "../scalingmenu.h"
 #include "../inputmenu.h"
+#include "../fullscreen.h"
 #include <QApplication>
 #include <QLoggingCategory>
 #include <QCommandLineParser>
@@ -70,6 +71,7 @@ int main(int argc, char **argv) {
     auto *viewMenu = window.menuBar()->addMenu(QStringLiteral("View"));
     addScalingMenu(viewMenu, widget);
     addInputMenu(window.menuBar(), window.statusBar(), widget);
+    new Fullscreen(&window, viewMenu, widget);
     auto *resizeAction = viewMenu->addAction(QStringLiteral("Auto Resize Guest"));
     resizeAction->setCheckable(true);
     resizeAction->setChecked(ViewerSettings::autoResizeGuest());

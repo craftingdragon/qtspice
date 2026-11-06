@@ -2,6 +2,12 @@
 #include <QSettings>
 
 namespace ViewerSettings {
+inline bool fullscreenEdgeMenu() {
+    return QSettings().value(QStringLiteral("display/fullscreenEdgeMenu"), false).toBool();
+}
+inline void setFullscreenEdgeMenu(bool enabled) {
+    QSettings().setValue(QStringLiteral("display/fullscreenEdgeMenu"), enabled);
+}
 inline int scalingMode() {
     bool ok = false;
     const int value = QSettings().value(QStringLiteral("display/scalingMode"), 0).toInt(&ok);
