@@ -1,4 +1,5 @@
 #include "qspicesession.h"
+#include "keyboardcommands.h"
 #include "clipboardcapability.h"
 #include "displayframe.h"
 #include <QtSpice/QSpiceDisplay.h>
@@ -87,6 +88,16 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
         g_signal_connect(channel, "display-invalidate", G_CALLBACK(onInvalidate), self);
     } else if (type == SPICE_CHANNEL_INPUTS) {
         self->inputs = SPICE_INPUTS_CHANNEL(channel);
+        self->keyboardReadiness = {};
+        g_signal_connect(channel, "inputs-modifiers", G_CALLBACK(+[](SpiceChannel *source, gpointer data) {
+            auto *w = static_cast<Worker *>(data);
+            if (source != SPICE_CHANNEL(w->inputs)) return;
+            w->keyboardReadiness.initialized = true;
+            if (!w->inputsReady && w->keyboardReadiness.ready()) {
+                w->inputsReady = true;
+                QMetaObject::invokeMethod(w->owner, [owner = w->owner] { owner->setInputReady(true); }, Qt::QueuedConnection);
+            }
+        }), self);
     } else if (type == SPICE_CHANNEL_CURSOR && id == 0) {
         self->cursor = SPICE_CURSOR_CHANNEL(channel);
         g_signal_connect(channel, "cursor-set", G_CALLBACK(onCursorSet), self);
@@ -112,6 +123,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     if (channel == SPICE_CHANNEL(self->inputs)) {
         self->inputs = nullptr;
         self->inputsReady = false;
+        self->keyboardReadiness = {};
         self->pressedKeys.clear();
         self->pressedButtons.clear();
         QMetaObject::invokeMethod(self->owner, [owner = self->owner] { owner->setInputReady(false); }, Qt::QueuedConnection);
@@ -266,9 +278,13 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
         << "error-code" << (channelError ? channelError->code : 0)
         << "message" << (channelError ? channelError->message : "none");
     if (channel == SPICE_CHANNEL(self->inputs)) {
-        if (event == SPICE_CHANNEL_OPENED) self->inputsReady = true;
+        if (event == SPICE_CHANNEL_OPENED) {
+            self->keyboardReadiness.opened = true;
+            self->inputsReady = self->keyboardReadiness.ready();
+        }
         else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) {
             self->inputsReady = false;
+            self->keyboardReadiness = {};
             self->pressedKeys.clear();
             self->pressedButtons.clear();
         }
@@ -295,6 +311,7 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
         self->mainOpened = false;
         self->sentDisplaySize = {};
         self->inputsReady = false;
+        self->keyboardReadiness = {};
         const GError *error = spice_channel_get_error(channel);
         QString message = error ? QString::fromUtf8(error->message) : QStringLiteral("SPICE connection closed");
         QMetaObject::invokeMethod(self->owner, [owner = self->owner, message] {
@@ -384,6 +401,7 @@ void Session::Worker::disconnect() {
     display = nullptr;
     inputs = nullptr;
     inputsReady = false;
+    keyboardReadiness = {};
     cursor = nullptr;
     main = nullptr;
     mainOpened = false;
@@ -578,6 +596,27 @@ void Session::connectToConfig(const ConnectionConfig &config) {
 void Session::disconnectFromHost() {
     worker_->post([worker = worker_.get()] { worker->disconnect(); });
     setState(State::Disconnected);
+}
+
+void Session::sendCtrlAltDelete() {
+    worker_->post([w = worker_.get()] {
+        if (w->inputsReady) qCDebug(inputLog) << "send Ctrl+Alt+Delete";
+        dispatchCtrlAltDelete(w->inputsReady && w->inputs, w->pressedKeys,
+            [w](quint32 code, bool pressed) {
+                if (pressed) spice_inputs_channel_key_press(w->inputs, code);
+                else spice_inputs_channel_key_release(w->inputs, code);
+            });
+    });
+}
+void Session::setKeyLocks(KeyboardLocks locks, KeyboardLocks knownLocks) {
+    worker_->post([w = worker_.get(), locks, knownLocks] {
+        if (!w->inputsReady || !w->inputs || !(knownLocks.toInt() & 7)) return;
+        gint guest = 0;
+        g_object_get(w->inputs, "key-modifiers", &guest, nullptr);
+        const unsigned desired = mergedKeyLocks(guest, locks.toInt(), knownLocks.toInt());
+        qCDebug(inputLog) << "synchronize key locks" << desired << "known" << knownLocks.toInt();
+        spice_inputs_channel_set_key_locks(w->inputs, desired);
+    });
 }
 
 void Session::sendKey(quint32 scancode, bool pressed) {

@@ -2,6 +2,8 @@
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceDisplay.h>
 #include "clipboardbridge.h"
+#include "keyboardlocks.h"
+#include "locksynchronizer.h"
 #include "displaygeometry.h"
 #include "../core/intervalstats.h"
 #include <QScrollBar>
@@ -30,6 +32,10 @@ namespace QtSpice { class KeyboardCapture {}; }
 
 namespace QtSpice {
 Widget::Widget(QWidget *parent) : QWidget(parent), diagnostics_(std::make_unique<IntervalStats>("widget", this)) {
+    keyboardLocks_ = std::make_unique<KeyboardLocks>();
+    lockSynchronizer_ = std::make_unique<LockSynchronizer>();
+    keyboardLocks_->changed = [this] { scheduleLockSync(); };
+    scheduleLockSync();
 #ifdef QTSPICE_WAYLAND_KEYBOARD_CAPTURE
     if (QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))) {
         keyboardCapture_ = std::make_unique<KeyboardCapture>([this](bool active) {
@@ -40,7 +46,7 @@ Widget::Widget(QWidget *parent) : QWidget(parent), diagnostics_(std::make_unique
     }
 #endif
     qApp->installEventFilter(this);
-    connect(qGuiApp, &QGuiApplication::focusWindowChanged, this, [this] { updateKeyboardCapture(); });
+    connect(qGuiApp, &QGuiApplication::focusWindowChanged, this, [this] { updateKeyboardCapture(); scheduleLockSync(); });
     horizontal_ = new QScrollBar(Qt::Horizontal, this);
     vertical_ = new QScrollBar(Qt::Vertical, this);
     horizontal_->hide();
@@ -103,6 +109,8 @@ void Widget::setSession(Session *session) {
         disconnect(clipboardBridge_.get(), nullptr, session_, nullptr);
     }
     session_ = session;
+    lockSynchronizer_->reset();
+    scheduleLockSync();
     qCDebug(performanceLog) << "widget" << this << "attached session" << session;
     frame_ = {};
     updateDisplayGeometry();
@@ -143,6 +151,8 @@ void Widget::setSession(Session *session) {
     });
     connect(session_, &Session::inputReadyChanged, this, [this](bool ready) {
         if (!ready) releaseMouseGrab();
+        lockSynchronizer_->reset();
+        scheduleLockSync();
         updateKeyboardCapture();
     });
     updateKeyboardCapture();
@@ -284,6 +294,7 @@ void Widget::mouseMoveEvent(QMouseEvent *event) {
 }
 void Widget::mousePressEvent(QMouseEvent *event) {
     keyboardSuspended_ = false;
+    scheduleLockSync();
     setFocus(Qt::MouseFocusReason);
     updateKeyboardCapture();
     if (!QRectF(QPointF(), QSizeF(contentSize_)).contains(event->position())) return;
@@ -336,19 +347,30 @@ void Widget::keyPressEvent(QKeyEvent *event) {
     }
     if (keyboardSuspended_) { event->ignore(); return; }
     if (session_ && !event->isAutoRepeat()) session_->sendKey(nativeXtScanCode(event->nativeScanCode(), event->key()), true);
+    if (!event->isAutoRepeat() && (event->key() == Qt::Key_CapsLock || event->key() == Qt::Key_NumLock || event->key() == Qt::Key_ScrollLock)) {
+        lockSynchronizer_->reset();
+        scheduleLockSync();
+    }
     event->accept();
 }
 void Widget::keyReleaseEvent(QKeyEvent *event) {
     if (keyboardSuspended_) { event->ignore(); return; }
     if (session_ && !event->isAutoRepeat()) session_->sendKey(nativeXtScanCode(event->nativeScanCode(), event->key()), false);
+    if (!event->isAutoRepeat() && (event->key() == Qt::Key_CapsLock || event->key() == Qt::Key_NumLock || event->key() == Qt::Key_ScrollLock)) {
+        lockSynchronizer_->reset();
+        scheduleLockSync();
+    }
     event->accept();
 }
 void Widget::focusInEvent(QFocusEvent *event) {
     QWidget::focusInEvent(event);
+    lockSynchronizer_->reset();
+    scheduleLockSync();
     updateKeyboardCapture();
 }
 void Widget::focusOutEvent(QFocusEvent *event) {
     stopKeyboardCapture();
+    lockSynchronizer_->reset();
     if (session_) session_->releaseAllInputs();
     releaseMouseGrab();
     QWidget::focusOutEvent(event);
@@ -429,10 +451,40 @@ void Widget::setKeyboardCaptureEnabled(bool enabled) {
     if (keyboardCaptureEnabled_ == enabled) return;
     keyboardCaptureEnabled_ = enabled;
     keyboardSuspended_ = false;
+    scheduleLockSync();
     updateKeyboardCapture();
     Q_EMIT keyboardCaptureEnabledChanged(enabled);
 }
+void Widget::setSynchronizeLockKeys(bool enabled) {
+    if (synchronizeLockKeys_ == enabled) return;
+    synchronizeLockKeys_ = enabled;
+    lockSynchronizer_->reset();
+    scheduleLockSync();
+    Q_EMIT synchronizeLockKeysChanged(enabled);
+}
+bool Widget::canSynchronizeLocks() const {
+    return synchronizeLockKeys_ && session_ && session_->inputReady() && hasFocus() && isVisible() &&
+        window()->isActiveWindow() && !keyboardSuspended_ &&
+        !QApplication::activePopupWidget() && !QApplication::activeModalWidget();
+}
+void Widget::scheduleLockSync() {
+    if (lockSyncScheduled_) return;
+    lockSyncScheduled_ = true;
+    QTimer::singleShot(0, this, [this] {
+        lockSyncScheduled_ = false;
+        const auto state = keyboardLocks_->snapshot(window()->windowHandle());
+        const bool available = keyboardLocks_->available();
+        if (lockSynchronizationAvailable_ != available) {
+            lockSynchronizationAvailable_ = available;
+            Q_EMIT lockSynchronizationAvailableChanged(available);
+        }
+        lockSynchronizer_->apply(state, canSynchronizeLocks(), [this](LockSnapshot state) {
+                session_->setKeyLocks(Session::KeyboardLocks::fromInt(state.locks), Session::KeyboardLocks::fromInt(state.known));
+            });
+    });
+}
 void Widget::releaseInputCapture() {
+    lockSynchronizer_->reset();
     keyboardSuspended_ = keyboardCaptureEnabled_;
     stopKeyboardCapture();
     if (session_) session_->releaseAllInputs();

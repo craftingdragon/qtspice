@@ -8,6 +8,7 @@
 #include "tunnelproxy.h"
 #include "qspiceaudio.h"
 #include "intervalstats.h"
+#include "keyboardcommands.h"
 
 struct QtSpice::Session::Worker {
     explicit Worker(Session *owner);
@@ -32,6 +33,7 @@ struct QtSpice::Session::Worker {
     SpiceDisplayChannel *display = nullptr;
     SpiceInputsChannel *inputs = nullptr;
     bool inputsReady = false;
+    QtSpice::KeyboardReadiness keyboardReadiness;
     SpiceCursorChannel *cursor = nullptr;
     SpiceMainChannel *main = nullptr;
     QSize desiredDisplaySize;

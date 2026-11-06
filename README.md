@@ -163,6 +163,16 @@ scripts/with-private-libsoup ./build/proxmox-viewer --performance-stats https://
 
 Compare pending proxy buffers with display invalidations/delivery during a freeze. Pending frames growing indicates queued delivery falling behind; invalidations stopping while audio continues indicates a display-path stall, but does not alone identify the remote server as the cause. Very long sample intervals indicate delayed event-loop execution. These diagnostics do not change buffering, rendering, or compression.
 
+## Keyboard actions and lock keys
+
+Both viewers provide **Input → Send Ctrl+Alt+Delete**, available once the guest inputs channel is ready. It releases held guest keys before sending the complete sequence; it has no local shortcut and also works from the fullscreen menu.
+
+**Input → Synchronize Lock Keys** is enabled by default and remembered separately for each viewer. While the console has focus, it matches guest Caps Lock, Num Lock, and Scroll Lock to the known local states. It synchronizes on focus entry, connection readiness, capture resumption, and local lock changes. Capture suspension pauses synchronization until you click the console again. Disabling the option leaves ordinary lock-key forwarding enabled. Guest lock changes do not change the local keyboard LEDs.
+
+Native Wayland reads the compositor's keymap/modifier events using libxkbcommon and Qt's existing display connection. X11 queries named XKB indicators on focus entry and lock-key events; XWayland reflects the state exposed by its X server. Only indicators known to the native backend are synchronized; unknown guest lock bits are preserved. Builds without native support keep normal key forwarding and explain synchronization unavailability in the action's tooltip. There is no polling timer.
+
+Optional Linux build dependencies are `xkbcommon` plus the existing Qt GuiPrivate/wayland-client support for Wayland, and `libX11` with an X11-enabled Qt for X11. Synchronization diagnostics use `qtspice.input.debug=true`.
+
 ## Keyboard capture
 
 Both viewers offer **Input → Capture Keyboard**, remembered separately per viewer and initially off. With capture enabled, focusing the console requests desktop shortcuts such as Meta/Super and Alt+Tab for the guest. A permanent status label distinguishes waiting, pending compositor approval, active, suspended, and unavailable/failed capture.

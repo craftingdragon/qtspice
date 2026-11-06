@@ -44,6 +44,14 @@ public:
     void connectToHost(const QString &host, quint16 port);
     void connectToConfig(const ConnectionConfig &config);
     void disconnectFromHost();
+    enum class KeyboardLock { ScrollLock = 1, NumLock = 2, CapsLock = 4 };
+    Q_ENUM(KeyboardLock)
+    Q_DECLARE_FLAGS(KeyboardLocks, KeyboardLock)
+    Q_FLAG(KeyboardLocks)
+    void sendCtrlAltDelete();
+    // Unknown bits retain the latest guest-reported state. Requests are not
+    // retained across an unavailable inputs channel or reconnection.
+    void setKeyLocks(KeyboardLocks locks, KeyboardLocks knownLocks);
     void sendKey(quint32 scancode, bool pressed);
     void sendPointer(int x, int y, int buttons);
     void sendRelativePointer(int dx, int dy, int buttons);
@@ -85,3 +93,5 @@ private:
 };
 
 } // namespace QtSpice
+
+Q_DECLARE_OPERATORS_FOR_FLAGS(QtSpice::Session::KeyboardLocks)

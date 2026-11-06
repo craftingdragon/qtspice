@@ -70,7 +70,7 @@ int main(int argc, char **argv) {
     SharedFolder::addMenu(window.menuBar(), &session);
     auto *viewMenu = window.menuBar()->addMenu(QStringLiteral("View"));
     addScalingMenu(viewMenu, widget);
-    addInputMenu(window.menuBar(), window.statusBar(), widget);
+    addInputMenu(window.menuBar(), window.statusBar(), widget, &session);
     new Fullscreen(&window, viewMenu, widget);
     auto *resizeAction = viewMenu->addAction(QStringLiteral("Auto Resize Guest"));
     resizeAction->setCheckable(true);

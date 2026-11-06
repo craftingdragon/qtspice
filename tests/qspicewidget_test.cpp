@@ -10,7 +10,11 @@
 #include "../src/widgets/displaygeometry.h"
 
 namespace QtSpice {
+struct SessionTestAccess {
+    static void ready(Session &session, bool ready) { session.setInputReady(ready); }
+};
 struct WidgetTestAccess {
+    static bool canSync(const Widget &widget) { return widget.canSynchronizeLocks(); }
     static void simulateCapture(Widget &widget) {
         widget.keyboardRequested_ = true;
         widget.setKeyboardCaptureState(Widget::KeyboardCaptureState::Active);
@@ -80,7 +84,7 @@ private Q_SLOTS:
         QMenuBar menu;
         QStatusBar status;
         addInputMenu(&menu, &status, &widget);
-        auto *action = menu.actions().first()->menu()->actions().first();
+        auto *action = menu.findChild<QAction *>(QStringLiteral("captureKeyboard"));
         QVERIFY(!action->isChecked());
         action->trigger();
         QVERIFY(widget.keyboardCaptureEnabled());
@@ -93,6 +97,83 @@ private Q_SLOTS:
         widget.setKeyboardCaptureEnabled(false);
         QVERIFY(!action->isChecked());
         QVERIFY(second.keyboardCaptureEnabled());
+    }
+    void lockSynchronizationFocusAndReadiness() {
+        QtSpice::Session first, second;
+        QtSpice::Widget widget;
+        widget.setSession(&first);
+        widget.show();
+        widget.activateWindow();
+        widget.setFocus();
+        QTRY_VERIFY(widget.isActiveWindow());
+        QTRY_VERIFY(widget.hasFocus());
+        QVERIFY(!QtSpice::WidgetTestAccess::canSync(widget));
+        QtSpice::SessionTestAccess::ready(first, true);
+        QVERIFY(QtSpice::WidgetTestAccess::canSync(widget));
+        widget.setSynchronizeLockKeys(false);
+        QVERIFY(!QtSpice::WidgetTestAccess::canSync(widget));
+        widget.setSynchronizeLockKeys(true);
+        QVERIFY(QtSpice::WidgetTestAccess::canSync(widget));
+        widget.setKeyboardCaptureEnabled(true);
+        widget.releaseInputCapture();
+        widget.setFocus();
+        QVERIFY(!QtSpice::WidgetTestAccess::canSync(widget));
+        QTest::mouseClick(&widget, Qt::LeftButton);
+        QVERIFY(QtSpice::WidgetTestAccess::canSync(widget));
+        widget.clearFocus();
+        QVERIFY(!QtSpice::WidgetTestAccess::canSync(widget));
+        widget.setFocus();
+        QVERIFY(QtSpice::WidgetTestAccess::canSync(widget));
+        QtSpice::SessionTestAccess::ready(first, false);
+        QVERIFY(!QtSpice::WidgetTestAccess::canSync(widget));
+        QtSpice::SessionTestAccess::ready(first, true);
+        QVERIFY(QtSpice::WidgetTestAccess::canSync(widget));
+        widget.setSession(&second);
+        QVERIFY(!QtSpice::WidgetTestAccess::canSync(widget));
+        QtSpice::SessionTestAccess::ready(second, true);
+        QVERIFY(QtSpice::WidgetTestAccess::canSync(widget));
+        widget.hide();
+        QVERIFY(!QtSpice::WidgetTestAccess::canSync(widget));
+    }
+    void keyboardOptionsMenu() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        QCoreApplication::setOrganizationName(QStringLiteral("KeyboardOptionsTest"));
+        QCoreApplication::setApplicationName(QStringLiteral("viewer-a"));
+        QtSpice::Session session;
+        QtSpice::Widget widget;
+        QMenuBar menu;
+        QStatusBar status;
+        addInputMenu(&menu, &status, &widget, &session);
+        auto *send = menu.findChild<QAction *>(QStringLiteral("sendCtrlAltDelete"));
+        auto *sync = menu.findChild<QAction *>(QStringLiteral("synchronizeLockKeys"));
+        QVERIFY(send && sync);
+        QVERIFY(!send->isEnabled());
+        QVERIFY(send->shortcut().isEmpty());
+        Q_EMIT session.inputReadyChanged(true);
+        QVERIFY(send->isEnabled());
+        send->trigger(); // Unavailable worker channel safely ignores the command.
+        Q_EMIT session.inputReadyChanged(false);
+        QVERIFY(!send->isEnabled());
+        QVERIFY(widget.synchronizeLockKeys());
+        QVERIFY(sync->isChecked());
+        QSignalSpy changed(&widget, &QtSpice::Widget::synchronizeLockKeysChanged);
+        sync->trigger();
+        QVERIFY(!widget.synchronizeLockKeys());
+        QCOMPARE(changed.size(), 1);
+        QtSpice::Widget second;
+        QMenuBar secondMenu;
+        addInputMenu(&secondMenu, &status, &second);
+        QVERIFY(!second.synchronizeLockKeys());
+        QCoreApplication::setApplicationName(QStringLiteral("viewer-b"));
+        QtSpice::Widget third;
+        QMenuBar thirdMenu;
+        addInputMenu(&thirdMenu, &status, &third);
+        QVERIFY(third.synchronizeLockKeys());
+        widget.setSynchronizeLockKeys(true);
+        QVERIFY(sync->isChecked());
     }
     void scalingMenu() {
         QTemporaryDir directory;

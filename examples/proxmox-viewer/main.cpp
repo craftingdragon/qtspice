@@ -48,7 +48,7 @@ public:
         SharedFolder::addMenu(menuBar(), &session_);
         auto *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
         addScalingMenu(viewMenu, widget);
-        addInputMenu(menuBar(), statusBar(), widget);
+        addInputMenu(menuBar(), statusBar(), widget, &session_);
         new Fullscreen(this, viewMenu, widget);
         auto *snapshotAction = viewMenu->addAction(QStringLiteral("Save Next Frame…"));
         connect(snapshotAction, &QAction::triggered, this, [this] {

@@ -15,6 +15,8 @@ class WaylandPointerLock;
 class ClipboardBridge;
 class IntervalStats;
 class KeyboardCapture;
+class KeyboardLocks;
+class LockSynchronizer;
 class Widget final : public QWidget {
     Q_OBJECT
 public:
@@ -24,6 +26,9 @@ public:
     void setKeyboardCaptureEnabled(bool enabled);
     KeyboardCaptureState keyboardCaptureState() const { return keyboardCaptureState_; }
     void releaseInputCapture();
+    bool synchronizeLockKeys() const { return synchronizeLockKeys_; }
+    void setSynchronizeLockKeys(bool enabled);
+    bool lockSynchronizationAvailable() const { return lockSynchronizationAvailable_; }
     enum class ScalingMode { SmoothFit, UnfilteredFit, NativePixels };
     Q_ENUM(ScalingMode)
     ScalingMode scalingMode() const noexcept;
@@ -35,6 +40,8 @@ public:
     void setAutoResizeGuest(bool enabled);
     QSize sizeHint() const override;
 Q_SIGNALS:
+    void synchronizeLockKeysChanged(bool enabled);
+    void lockSynchronizationAvailableChanged(bool available);
     void keyboardCaptureEnabledChanged(bool enabled);
     void keyboardCaptureStateChanged(QtSpice::Widget::KeyboardCaptureState state);
     void scalingModeChanged(ScalingMode mode);
@@ -57,6 +64,13 @@ protected:
 private:
     friend struct WidgetTestAccess;
     bool eventFilter(QObject *, QEvent *) override;
+    bool synchronizeLockKeys_ = true;
+    bool lockSynchronizationAvailable_ = false;
+    bool lockSyncScheduled_ = false;
+    std::unique_ptr<KeyboardLocks> keyboardLocks_;
+    std::unique_ptr<LockSynchronizer> lockSynchronizer_;
+    void scheduleLockSync();
+    bool canSynchronizeLocks() const;
     bool keyboardCaptureEnabled_ = false;
     bool keyboardSuspended_ = false;
     bool keyboardRequested_ = false;

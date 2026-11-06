@@ -43,6 +43,8 @@ quint32 xtScanCode(int key) {
     case Qt::Key_Alt: return 0x38;
     case Qt::Key_Space: return 0x39;
     case Qt::Key_CapsLock: return 0x3a;
+    case Qt::Key_NumLock: return 0x45;
+    case Qt::Key_ScrollLock: return 0x46;
     case Qt::Key_F1: return 0x3b; case Qt::Key_F2: return 0x3c;
     case Qt::Key_F3: return 0x3d; case Qt::Key_F4: return 0x3e;
     case Qt::Key_F5: return 0x3f; case Qt::Key_F6: return 0x40;
