@@ -1,3 +1,4 @@
+#include "../monitorwindows.h"
 #include "../audiomenu.h"
 #include "../spicelogging.h"
 #include "../browserlogging.h"
@@ -50,6 +51,7 @@ public:
         addScalingMenu(viewMenu, widget);
         addInputMenu(menuBar(), statusBar(), widget, &session_);
         new Fullscreen(this, viewMenu, widget);
+        new MonitorWindows(this, &session_, viewMenu);
         auto *snapshotAction = viewMenu->addAction(QStringLiteral("Save Next Frame…"));
         connect(snapshotAction, &QAction::triggered, this, [this] {
             const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save next guest frame"),

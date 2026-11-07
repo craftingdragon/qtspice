@@ -5,6 +5,20 @@
 class DisplayTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void cropsIndependentHeads() {
+        QImage backing(100, 40, QImage::Format_RGB32); backing.fill(Qt::red);
+        for (int y = 0; y < 40; ++y) for (int x = 50; x < 100; ++x) backing.setPixelColor(x, y, Qt::blue);
+        SpiceDisplayPrimary p{}; p.format = SPICE_SURFACE_FMT_32_xRGB; p.width = 100; p.height = 40;
+        p.stride = backing.bytesPerLine(); p.data = backing.bits();
+        auto left = QtSpice::copyMonitorRect(p, {0, 0, 50, 40});
+        auto right = QtSpice::copyMonitorRect(p, {50, 0, 50, 40});
+        QCOMPARE(left.pixelColor(49,39), QColor(Qt::red));
+        QCOMPARE(right.pixelColor(0,0), QColor(Qt::blue));
+        backing.fill(Qt::green);
+        QCOMPARE(right.pixelColor(0,0), QColor(Qt::blue));
+        QVERIFY(QtSpice::copyMonitorRect(p, {90,0,20,40}).isNull());
+        QVERIFY(QtSpice::copyMonitorRect(p, {-1,0,20,40}).isNull());
+    }
     void copiesPrimary() {
         quint32 pixels[] = {0x00112233, 0x00445566};
         QImage image = QtSpice::copyPrimary(32, 2, 1, 8, reinterpret_cast<const uchar *>(pixels));

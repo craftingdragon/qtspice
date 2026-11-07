@@ -84,9 +84,11 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
         g_signal_connect(channel, "main-clipboard-selection", G_CALLBACK(onClipboardData), self);
         g_signal_connect(channel, "main-clipboard-selection-release", G_CALLBACK(onClipboardRelease), self);
         g_signal_connect(channel, "main-clipboard-selection-request", G_CALLBACK(onClipboardRequest), self);
-    } else if (type == SPICE_CHANNEL_DISPLAY && id == 0) {
+    } else if (type == SPICE_CHANNEL_DISPLAY) {
         self->display = SPICE_DISPLAY_CHANNEL(channel);
-        self->displayId = id;
+        self->displays.insert(id, SPICE_DISPLAY_CHANNEL(channel));
+        g_signal_connect(channel, "notify::monitors-max", G_CALLBACK(+[](GObject *, GParamSpec *, gpointer d) { static_cast<Worker *>(d)->refreshMonitors(); }), self);
+        self->refreshMonitors();
         g_signal_connect(channel, "notify::monitors", G_CALLBACK(+[](GObject *c, GParamSpec *, gpointer d) {
             Worker::onDisplayChanged(SPICE_CHANNEL(c), d);
         }), self);
@@ -107,13 +109,13 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
                 QMetaObject::invokeMethod(w->owner, [owner = w->owner] { owner->setInputReady(true); }, Qt::QueuedConnection);
             }
         }), self);
-    } else if (type == SPICE_CHANNEL_CURSOR && id == 0) {
+    } else if (type == SPICE_CHANNEL_CURSOR) {
         self->cursor = SPICE_CURSOR_CHANNEL(channel);
         g_signal_connect(channel, "cursor-set", G_CALLBACK(onCursorSet), self);
         g_signal_connect(channel, "cursor-hide", G_CALLBACK(onCursorHide), self);
     }
-    if ((type == SPICE_CHANNEL_DISPLAY && id == 0) || type == SPICE_CHANNEL_INPUTS ||
-        (type == SPICE_CHANNEL_CURSOR && id == 0)) {
+    if ((type == SPICE_CHANNEL_DISPLAY) || type == SPICE_CHANNEL_INPUTS ||
+        (type == SPICE_CHANNEL_CURSOR)) {
         spice_channel_connect(channel);
     }
     QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id] { Q_EMIT owner->channelAdded(type, id); }, Qt::QueuedConnection);
@@ -128,6 +130,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     self->webdav.remove(channel);
     self->webdavOpened.remove(channel);
     self->owner->updateSharingState();
+    if (type == SPICE_CHANNEL_DISPLAY) { self->displays.remove(id); self->refreshMonitors(); }
     if (channel == SPICE_CHANNEL(self->display)) self->display = nullptr;
     if (channel == SPICE_CHANNEL(self->inputs)) {
         self->inputs = nullptr;
@@ -150,47 +153,119 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id] { Q_EMIT owner->channelRemoved(type, id); }, Qt::QueuedConnection);
 }
 
+void Session::Worker::refreshMonitors() {
+    QList<MonitorInfo> result;
+    for (auto it = displays.cbegin(); it != displays.cend(); ++it) {
+        guint maximum = 1; GArray *configs = nullptr;
+        g_object_get(it.value(), "monitors-max", &maximum, "monitors", &configs, nullptr);
+        const int count = it.key() == 0 ? int(std::min(maximum, 256u)) : 1;
+        for (int i = 0; i < count; ++i) {
+            MonitorInfo info{{it.key(), i}, {}, false};
+            if (configs) for (guint j = 0; j < configs->len; ++j) {
+                const auto &c = g_array_index(configs, SpiceDisplayMonitorConfig, j);
+                if (c.id == guint(i) && c.surface_id == 0 && c.width && c.height && c.width <= 16384 && c.height <= 16384 && c.x <= 16384 && c.y <= 16384) {
+                    info.geometry = QRect(c.x, c.y, c.width, c.height); info.enabled = true;
+                }
+            }
+            if ((!configs || !configs->len) && !spice_channel_test_capability(SPICE_CHANNEL(it.value()), SPICE_DISPLAY_CAP_MONITORS_CONFIG)) {
+                SpiceDisplayPrimary primary{};
+                if (spice_display_channel_get_primary(SPICE_CHANNEL(it.value()), 0, &primary)) {
+                    info.geometry = QRect(0, 0, primary.width, primary.height); info.enabled = !info.geometry.isEmpty();
+                }
+            }
+            result.append(info);
+        }
+        if (configs) g_array_unref(configs);
+    }
+    if (owner->monitors_ == result) return;
+    owner->monitors_ = result;
+    bool firstTopology = awaitingTopology && std::any_of(result.cbegin(), result.cend(), [](const MonitorInfo &m) { return m.enabled; });
+    if (firstTopology) {
+        awaitingTopology = false;
+        if (layoutPending) for (const auto &m : result) if (!desiredMonitors.contains(m.id)) desiredMonitors[m.id] = m;
+    }
+    observeMonitorLayout(result);
+    for (auto it = owner->frames_.begin(); it != owner->frames_.end();) {
+        bool enabled = false;
+        for (const auto &m : result) if (m.id == it.key() && m.enabled) enabled = true;
+        if (!enabled) { auto id = it.key(); it = owner->frames_.erase(it); Q_EMIT owner->monitorFrameReady(id, {}); if (id == MonitorId{}) Q_EMIT owner->frameReady({}); }
+        else ++it;
+    }
+    Q_EMIT owner->monitorsChanged();
+    if (firstTopology && layoutPending) sendDisplaySize();
+}
+
+void Session::Worker::observeMonitorLayout(const QList<MonitorInfo> &observed) {
+    bool matches = true;
+    for (const auto &wanted : std::as_const(desiredMonitors)) {
+        bool found = false;
+        for (const auto &actual : observed) if (actual.id == wanted.id) found = actual.enabled == wanted.enabled && (!wanted.enabled || actual.geometry == wanted.geometry);
+        if (!found) matches = false;
+    }
+    if (layoutPending && matches) { layoutPending = false; ++layoutSerial; Q_EMIT owner->monitorConfigurationStatusChanged({}); }
+    if (!layoutPending) {
+        // A new guest topology after timeout supersedes the expired request.
+        ++layoutSerial;
+        Q_EMIT owner->monitorConfigurationStatusChanged({});
+        desiredMonitors.clear();
+        for (const auto &m : observed) desiredMonitors[m.id] = m;
+    }
+}
+
 void Session::Worker::onDisplayChanged(SpiceChannel *channel, gpointer data) {
     auto *self = static_cast<Worker *>(data);
-    QElapsedTimer copyTime;
-    if (self->diagnostics.enabled()) copyTime.start();
+    int channelId = 0; g_object_get(channel, "channel-id", &channelId, nullptr);
+    if (self->displays.value(channelId) != SPICE_DISPLAY_CHANNEL(channel)) return;
+    self->refreshMonitors();
+    self->renderMonitors(channel);
+}
+void Session::Worker::renderMonitors(SpiceChannel *channel, QRect invalidated) {
+    auto *self = this;
+    int channelId = 0; g_object_get(channel, "channel-id", &channelId, nullptr);
     SpiceDisplayPrimary primary{};
-    QImage image;
-    if (spice_display_channel_get_primary(channel, 0, &primary)) {
-        GArray *monitors = nullptr;
-        g_object_get(channel, "monitors", &monitors, nullptr);
-        image = copyMonitor(primary, monitors);
-        if (monitors) g_array_unref(monitors);
-        qCDebug(displayLog) << "surface" << QSize(primary.width, primary.height) << "visible monitor" << image.size();
+    if (!spice_display_channel_get_primary(channel, 0, &primary)) {
+        for (auto it = owner->frames_.begin(); it != owner->frames_.end();) {
+            if (it.key().channelId != channelId) { ++it; continue; }
+            auto id = it.key(); it = owner->frames_.erase(it);
+            Q_EMIT owner->monitorFrameReady(id, {}); if (id == MonitorId{}) Q_EMIT owner->frameReady({});
+        }
+        return;
     }
-    self->diagnostics.add(QStringLiteral("copies"));
-    if (copyTime.isValid()) self->diagnostics.add(QStringLiteral("copy-us"), quint64(copyTime.nsecsElapsed() / 1000));
-    self->diagnostics.add(QStringLiteral("frame-bytes"), quint64(image.sizeInBytes()));
-    ++self->pendingFrames;
-    self->diagnostics.gauge(QStringLiteral("pending-frames"), self->pendingFrames);
-    QMetaObject::invokeMethod(&self->diagnostics, [self, image] {
-        --self->pendingFrames;
-        self->diagnostics.gauge(QStringLiteral("pending-frames"), self->pendingFrames);
-        self->diagnostics.add(QStringLiteral("delivered"));
-        Q_EMIT self->owner->frameReady(image);
-    }, Qt::QueuedConnection);
+    for (const auto &m : std::as_const(self->owner->monitors_)) {
+        if (m.id.channelId != channelId || !m.enabled) continue;
+        if (!invalidated.isEmpty() && !m.geometry.intersects(invalidated)) continue;
+        QElapsedTimer copyTime; if (self->diagnostics.enabled()) copyTime.start();
+        QImage image = copyMonitorRect(primary, m.geometry);
+        if (copyTime.isValid()) self->diagnostics.add(QStringLiteral("copy-us"), copyTime.nsecsElapsed()/1000);
+        self->owner->frames_[m.id] = image;
+        self->diagnostics.add(QStringLiteral("copies"));
+        self->diagnostics.add(QStringLiteral("frame-bytes"), image.sizeInBytes());
+        Q_EMIT self->owner->monitorFrameReady(m.id, image);
+        if (m.id == MonitorId{}) Q_EMIT self->owner->frameReady(image);
+    }
 }
 
-void Session::Worker::onInvalidate(SpiceChannel *channel, gint, gint, gint, gint, gpointer data) {
+void Session::Worker::onInvalidate(SpiceChannel *channel, gint x, gint y, gint width, gint height, gpointer data) {
     static_cast<Worker *>(data)->diagnostics.add(QStringLiteral("invalidations"));
-    onDisplayChanged(channel, data);
+    static_cast<Worker *>(data)->renderMonitors(channel, QRect(x,y,width,height));
 }
 
-void Session::Worker::onCursorSet(SpiceCursorChannel *, gint width, gint height, gint hotX, gint hotY, gpointer rgba, gpointer data) {
+void Session::Worker::onCursorSet(SpiceCursorChannel *channel, gint width, gint height, gint hotX, gint hotY, gpointer rgba, gpointer data) {
     auto *self = static_cast<Worker *>(data);
     QImage image;
     if (rgba && width > 0 && height > 0 && width <= 256 && height <= 256)
         image = QImage(static_cast<const uchar *>(rgba), width, height, QImage::Format_ARGB32).copy();
+    int id = 0; g_object_get(channel, "channel-id", &id, nullptr);
+    self->owner->cursors_[id] = {image, QPoint(hotX, hotY)};
+    Q_EMIT self->owner->monitorCursorChanged(id, image, hotX, hotY);
     QMetaObject::invokeMethod(self->owner, [owner = self->owner, image, hotX, hotY] { Q_EMIT owner->cursorChanged(image, hotX, hotY); }, Qt::QueuedConnection);
 }
 
-void Session::Worker::onCursorHide(SpiceCursorChannel *, gpointer data) {
+void Session::Worker::onCursorHide(SpiceCursorChannel *channel, gpointer data) {
     auto *self = static_cast<Worker *>(data);
+    int id = 0; g_object_get(channel, "channel-id", &id, nullptr);
+    self->owner->cursors_.remove(id);
+    Q_EMIT self->owner->monitorCursorChanged(id, {}, 0, 0);
     QMetaObject::invokeMethod(self->owner, [owner = self->owner] { Q_EMIT owner->cursorChanged({}, 0, 0); }, Qt::QueuedConnection);
 }
 
@@ -213,6 +288,8 @@ void Session::Worker::onAgentUpdate(SpiceMainChannel *channel, gpointer data) {
     // BY_DEMAND and would otherwise produce a GSpice critical warning.
     const bool ready = clipboardByDemandReady(connected,
         spice_main_channel_agent_test_capability(channel, VD_AGENT_CAP_CLIPBOARD_BY_DEMAND));
+    self->owner->monitorConfigurationAvailable_ = connected;
+    Q_EMIT self->owner->monitorConfigurationAvailableChanged(connected);
     if (connected) self->sendDisplaySize();
     else self->sentDisplaySize = {};
     if (self->clipboardReady == ready) return;
@@ -375,6 +452,12 @@ void Session::Worker::disconnect() {
     g_object_unref(session);
     session = nullptr;
     proxy.reset();
+    displays.clear(); desiredMonitors.clear(); awaitingTopology = true; layoutPending = false; ++layoutSerial;
+    owner->cursors_.clear();
+    owner->frames_.clear(); owner->monitors_.clear();
+    owner->monitorConfigurationAvailable_ = false;
+    Q_EMIT owner->monitorConfigurationAvailableChanged(false);
+    Q_EMIT owner->monitorsChanged();
     display = nullptr;
     inputs = nullptr;
     inputsReady = false;
@@ -395,20 +478,44 @@ void Session::Worker::disconnect() {
 }
 
 void Session::Worker::sendDisplaySize() {
-    if (!main || !mainOpened || desiredDisplaySize.isEmpty() || sentDisplaySize == desiredDisplaySize) return;
-    gboolean agentConnected = FALSE;
-    g_object_get(main, "agent-connected", &agentConnected, nullptr);
-    if (!agentConnected) {
-        qCDebug(displayLog) << "guest agent not connected; retaining resize request" << desiredDisplaySize;
-        return;
+    if (!main || !mainOpened || awaitingTopology) return;
+    gboolean connected = FALSE; g_object_get(main, "agent-connected", &connected, nullptr);
+    if (!connected || desiredMonitors.isEmpty()) return;
+    layoutPending = true;
+    observeMonitorLayout(owner->monitors_);
+    if (!layoutPending) return;
+    g_object_set(main, "disable-display-position", FALSE, "disable-display-align", TRUE, nullptr);
+    for (const auto &m : std::as_const(desiredMonitors)) {
+        int id = m.id.channelId == 0 ? m.id.monitorId : m.id.channelId;
+        qCDebug(displayLog) << "requested monitor" << m.id.channelId << m.id.monitorId << "wire-id" << id << "enabled" << m.enabled << "geometry" << m.geometry;
+        spice_main_channel_update_display_enabled(main, id, m.enabled, FALSE);
+        if (m.enabled) spice_main_channel_update_display(main, id, m.geometry.x(), m.geometry.y(), m.geometry.width(), m.geometry.height(), FALSE);
     }
-    // Older agents can accept monitor configuration without advertising this
-    // capability; spice-gtk sends it whenever the agent is connected.
-    spice_main_channel_update_display_enabled(main, 0, TRUE, FALSE);
-    spice_main_channel_update_display(main, 0, 0, 0, desiredDisplaySize.width(), desiredDisplaySize.height(), FALSE);
+    spice_main_channel_update_display_enabled(main, -1, FALSE, FALSE);
+    for (const auto &m : std::as_const(desiredMonitors)) if (m.enabled)
+        spice_main_channel_update_display_enabled(main, m.id.channelId == 0 ? m.id.monitorId : m.id.channelId, TRUE, FALSE);
     const bool sent = spice_main_channel_send_monitor_config(main);
-    qCDebug(displayLog) << "monitor configuration" << desiredDisplaySize << "sent" << sent;
-    if (sent) sentDisplaySize = desiredDisplaySize;
+    qCDebug(displayLog) << "monitor config sent" << sent << "agent monitor support" << spice_main_channel_agent_test_capability(main, VD_AGENT_CAP_MONITORS_CONFIG) << "position support" << spice_main_channel_agent_test_capability(main, VD_AGENT_CAP_MONITORS_CONFIG_POSITION);
+    if (!sent) { Q_EMIT owner->monitorConfigurationStatusChanged(QStringLiteral("Could not send guest monitor configuration")); return; }
+    layoutPending = true; const auto serial = ++layoutSerial;
+    Q_EMIT owner->monitorConfigurationStatusChanged(QStringLiteral("Waiting for guest monitor configuration…"));
+    QTimer::singleShot(5000, owner, [this, serial] {
+        if (!layoutPending || serial != layoutSerial) return;
+        observeMonitorLayout(owner->monitors_);
+        if (!layoutPending) return;
+        QString detail;
+        for (const auto &wanted : std::as_const(desiredMonitors)) {
+            auto actual = std::find_if(owner->monitors_.cbegin(), owner->monitors_.cend(), [&wanted](const MonitorInfo &m) { return m.id == wanted.id; });
+            if (actual != owner->monitors_.cend() && actual->enabled == wanted.enabled && (!wanted.enabled || actual->geometry == wanted.geometry)) continue;
+            auto describe = [](const MonitorInfo &m) {
+                return m.enabled ? QStringLiteral("%1×%2 at %3,%4").arg(m.geometry.width()).arg(m.geometry.height()).arg(m.geometry.x()).arg(m.geometry.y()) : QStringLiteral("disabled");
+            };
+            detail = QStringLiteral(" · %1:%2 requested %3; guest %4").arg(wanted.id.channelId).arg(wanted.id.monitorId).arg(describe(wanted), actual == owner->monitors_.cend() ? QStringLiteral("unavailable") : describe(*actual));
+            break;
+        }
+        layoutPending = false;
+        Q_EMIT owner->monitorConfigurationStatusChanged(QStringLiteral("Guest monitor configuration unconfirmed") + detail);
+    });
 }
 
 void Session::Worker::releaseInputs() {
@@ -659,14 +766,55 @@ void Session::setHostClipboardText(const QString &text) {
     setHostClipboardContent({text, {}});
 }
 
-void Session::setDesiredDisplaySize(QSize size) {
-    if (size.width() < 320 || size.height() < 200 || size.width() > 8192 || size.height() > 8192 ||
-        qint64(size.width()) * size.height() > 32 * 1024 * 1024) size = {};
-    worker_->post([w = worker_.get(), size] {
-        if (w->desiredDisplaySize == size) return;
-        w->desiredDisplaySize = size;
-        if (!size.isEmpty()) w->sendDisplaySize();
-    });
+void Session::setDesiredDisplaySize(QSize size) { setDesiredMonitorSize({}, size); }
+void Session::setDesiredMonitorSize(MonitorId id, QSize size) {
+    if (size.isEmpty()) return;
+    if (size.width() < 320 || size.height() < 200 || size.width() > 8192 || size.height() > 8192 || qint64(size.width()) * size.height() > 32 * 1024 * 1024) return;
+    auto desired = worker_->desiredMonitors;
+    if (desired.isEmpty()) for (const auto &m : monitors_) desired[m.id] = m;
+    desired[id] = {id, QRect(QPoint(), size), true};
+    QList<MonitorInfo> layout = desired.values();
+    int x = 0; for (auto &m : layout) if (m.enabled) { m.geometry.moveTopLeft({x, 0}); x += m.geometry.width(); }
+    requestMonitorLayout(layout);
+}
+void Session::setMonitorEnabled(MonitorId id, bool enabled) {
+    if (!enabled && id == MonitorId{}) return;
+    auto desired = worker_->desiredMonitors;
+    if (desired.isEmpty()) for (const auto &m : monitors_) desired[m.id] = m;
+    auto m = desired.value(id, {id, QRect(0, 0, 1024, 768), false});
+    if (m.geometry.isEmpty()) m.geometry = QRect(0, 0, 1024, 768);
+    m.enabled = enabled; desired[id] = m;
+    auto layout = desired.values(); int x = 0;
+    for (auto &head : layout) if (head.enabled) { head.geometry.moveTopLeft({x, 0}); x += head.geometry.width(); }
+    requestMonitorLayout(layout);
+}
+void Session::requestMonitorLayout(const QList<MonitorInfo> &layout) {
+    QMap<MonitorId, MonitorInfo> validated; QSet<int> ids;
+    for (const auto &m : layout) {
+        if (m.id.channelId < 0 || m.id.monitorId < 0) return;
+        if (!monitors_.isEmpty()) {
+            bool advertised = false; for (const auto &slot : monitors_) if (slot.id == m.id) advertised = true;
+            if (!advertised) { Q_EMIT monitorConfigurationStatusChanged(QStringLiteral("Monitor not advertised by guest")); return; }
+        }
+        int wire = m.id.channelId == 0 ? m.id.monitorId : m.id.channelId;
+        if (wire < 0 || wire > 255 || ids.contains(wire) || (m.id.channelId != 0 && m.id.monitorId != 0)) return;
+        ids.insert(wire);
+        if (m.enabled && (m.geometry.isEmpty() || m.geometry.x() < 0 || m.geometry.y() < 0 || m.geometry.right() >= 16384 || m.geometry.bottom() >= 16384)) return;
+        validated[m.id] = m;
+    }
+    const bool unchangedPending = validated == worker_->desiredMonitors && worker_->layoutPending;
+    worker_->desiredMonitors = validated;
+    worker_->layoutPending = true;
+    worker_->observeMonitorLayout(monitors_);
+    if (!worker_->layoutPending || unchangedPending) return;
+    worker_->sendDisplaySize();
+}
+void Session::sendMonitorPointer(MonitorId id, int x, int y, int buttons) {
+    bool active = false; for (const auto &m : monitors_) if (m.id == id && m.enabled) active = true;
+    if (!active) return;
+    worker_->displayId = id.channelId == 0 ? id.monitorId : id.channelId;
+    sendPointer(x, y, buttons);
+    worker_->displayId = 0;
 }
 
 } // namespace QtSpice

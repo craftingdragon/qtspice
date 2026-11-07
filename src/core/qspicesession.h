@@ -32,6 +32,14 @@ struct QtSpice::Session::Worker {
     Session *owner;
     SpiceSession *session = nullptr;
     SpiceDisplayChannel *display = nullptr;
+    QMap<int, SpiceDisplayChannel *> displays;
+    QMap<MonitorId, MonitorInfo> desiredMonitors;
+    bool layoutPending = false;
+    bool awaitingTopology = true;
+    quint64 layoutSerial = 0;
+    void refreshMonitors();
+    void observeMonitorLayout(const QList<MonitorInfo> &observed);
+    void renderMonitors(SpiceChannel *channel, QRect invalidated = {});
     SpiceInputsChannel *inputs = nullptr;
     bool inputsReady = false;
     QtSpice::KeyboardReadiness keyboardReadiness;

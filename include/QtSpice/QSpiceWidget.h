@@ -1,5 +1,6 @@
 #pragma once
 #include <QWidget>
+#include <QtSpice/QSpiceSession.h>
 #include <QImage>
 #include <QPointer>
 #include <QString>
@@ -36,10 +37,13 @@ public:
     explicit Widget(QWidget *parent = nullptr);
     ~Widget() override;
     void setSession(Session *session);
+    void setMonitor(MonitorId id);
+    MonitorId monitor() const { return monitor_; }
     bool autoResizeGuest() const noexcept;
     void setAutoResizeGuest(bool enabled);
     QSize sizeHint() const override;
 Q_SIGNALS:
+    void monitorChanged(QtSpice::MonitorId id);
     void synchronizeLockKeysChanged(bool enabled);
     void lockSynchronizationAvailableChanged(bool available);
     void keyboardCaptureEnabledChanged(bool enabled);
@@ -86,6 +90,7 @@ private:
     QSize contentSize_;
     void updateDisplayGeometry();
     QRectF frameRect() const;
+    MonitorId monitor_;
     QPointer<Session> session_;
     QImage frame_;
     QString statusText_ = QStringLiteral("Disconnected");
@@ -94,7 +99,7 @@ private:
     bool hasLastMouse_ = false;
     QPoint lastMouse_;
     std::unique_ptr<WaylandPointerLock> waylandLock_;
-    std::unique_ptr<ClipboardBridge> clipboardBridge_;
+    QPointer<ClipboardBridge> clipboardBridge_;
     QTimer resizeTimer_;
     QSize lastRequestedSize_;
     bool autoResizeGuest_ = true;

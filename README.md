@@ -20,11 +20,11 @@ The simple viewer connects to a direct SPICE endpoint:
 ./build/simple-viewer --snapshot /tmp/frame.png /path/to/console.vv
 ```
 
-Display and input are implemented for the primary monitor with software rendering. A Proxmox `.vv` connection rendered a Rocky Linux login screen in live validation. Keyboard and client mode pointer input have been validated with Proxmox. Keyboard mapping currently covers standard US keys; broader layouts remain to be done.
+Display and input are implemented for guest monitors in separate windows with software rendering. A Proxmox `.vv` connection rendered a Rocky Linux login screen in live validation. Keyboard and client mode pointer input have been validated with Proxmox. Keyboard mapping currently covers standard US keys; broader layouts remain to be done.
 When the guest agent supports clipboard sharing, both viewers synchronize UTF-8 text and images with the host clipboard in both directions. Mixed items retain both text and image content. SPICE PNG, BMP, TIFF, and JPEG representations are supported through installed Qt image codecs; other Qt-readable host image MIME formats (such as WebP) are converted for transport. Optional codecs are discovered at runtime. Transparent JPEG output is flattened onto white. Animated/multipage content uses the first frame/page.
 
 Text is limited to 4 MiB, each encoded image to 64 MiB, and decoded image storage to 256 MiB (at most 64 megapixels at 32 bits per pixel). Image codecs run in bounded background pools; host images are encoded only when the guest requests a representation. Guest text and images are requested after a clipboard offer, with fallback between supported image formats. Unsupported or malformed content leaves the last usable clipboard intact; valid text from mixed items remains usable. File URLs are never opened, and file copying and primary selection remain unsupported. The host clipboard is preserved on disconnect. Event-based failures are logged under `qtspice.clipboard`; clipboard contents are never logged and no polling is added.
-Both viewers offer **View → Auto Resize Guest**. It starts enabled, is remembered separately by each viewer, and adjusts the guest's primary display after window resizing when the guest agent and guest display stack apply SPICE monitor configuration. Turn it off to keep the guest's current resolution; fitted display scaling still works. Live validation with a Proxmox guest confirmed resizing under GNOME Mutter X11. With the same guest running GNOME Mutter Wayland, QtSpice submitted the monitor configuration request but the resolution did not change; this depends on the guest compositor, graphics driver, and agent support.
+Both viewers offer **View → Auto Resize Guest**. It starts enabled, is remembered separately by each viewer, and adjusts each guest monitor after its window is resized when the guest agent and guest display stack apply SPICE monitor configuration. Turn it off to keep the guest's current resolution; fitted display scaling still works. Live validation with a Proxmox guest confirmed resizing under GNOME Mutter X11. With the same guest running GNOME Mutter Wayland, QtSpice submitted the monitor configuration request but the resolution did not change; this depends on the guest compositor, graphics driver, and agent support.
 In server mouse mode, click the display to capture the pointer and press Ctrl+Alt+G to release it. Native Wayland capture uses the compositor's relative pointer and pointer constraints protocols. A compositor must advertise both protocols. The Wayland build uses Qt's GuiPrivate platform interface to obtain the window surface, so it must be rebuilt after a Qt version change.
 The snapshot option saves the latest frame after two seconds and exits with a nonzero status if no frame arrived.
 
@@ -182,3 +182,35 @@ Both viewers offer **Input → Capture Keyboard**, remembered separately per vie
 **Ctrl+Alt+G releases both keyboard and pointer capture**, releases held guest inputs, and clears console focus. The saved preference stays enabled, but capture remains suspended across focus changes until you click the console again. Turning the toggle off and on also clears suspension. Ordinary focus loss, menus/dialogs, hiding, or disconnecting releases capture; focus return normally resumes it.
 
 Native Wayland uses the compositor keyboard-shortcuts-inhibit protocol with Qt's connection; no GTK widgets are used. The compositor may request permission, reject capture, reserve an escape shortcut, or revoke capture. Revoked inhibitors are not forcibly recreated. Native X11 uses Qt's native window keyboard grab. XWayland behavior remains subject to compositor policy. Unsupported backends retain ordinary input. This does not expand the existing keyboard scancode mapping to every multimedia/vendor key.
+
+### Multiple monitors
+
+Both viewers open separate windows for active guest monitors. **View → Monitors** enables and disables advertised heads. Closing an extra monitor window disables that guest monitor; closing the main console ends the session. Each window supports independent fullscreen and the existing capture-safe escape shortcuts. Move windows to local screens yourself; automatic screen assignment is not implemented.
+
+Viewer configuration changes arrange enabled heads horizontally, top-aligned. Resizing one window preserves the other enabled heads. Requests wait for the guest agent, and an unconfirmed status appears if the guest does not apply the configuration within five seconds. Guest-originated topology changes are displayed without requiring a reconnect. Monitor topology and local window placement are not saved across sessions.
+
+QXL must advertise enough heads and have enough video memory for all guest surfaces. Linux multi-head channel 0 and additional single-head display channels are supported; nonzero monitor surfaces and ambiguous overlapping SPICE display IDs are rejected. Actual resizing depends on the guest compositor/driver/agent, particularly with guest Wayland. Existing surface allocation and dimension limits still apply to the combined backing surface. One session shares clipboard, audio, and folder sharing across all its windows.
+
+### Optional Linux X11 guest autoresize helper
+
+Some QXL guests advertise the viewer-requested mode as preferred without the desktop applying it. The optional [spice-guest-autoresize.py](scripts/spice-guest-autoresize.py) runs **inside the guest**, as its graphical desktop user. It applies preferred modes to connected `Virtual-*` outputs, arranged horizontally, at startup and following DRM hotplug or XRandR events. It debounces events and waits without periodic polling. This is intended for Linux X11 guests such as Alpine with LXQt/Openbox, not Wayland guests or the host desktop.
+
+Copy the script into the guest. On Alpine, install dependencies as root:
+
+```sh
+apk add python3 py3-xlib xrandr
+```
+
+Then install as the normal guest desktop user:
+
+```sh
+python3 spice-guest-autoresize.py --install
+```
+
+This copies the script to `~/.local/bin/` and writes an XDG autostart entry to `~/.config/autostart/` (or `$XDG_CONFIG_HOME/autostart/`). Log out and back in, or run `~/.local/bin/spice-guest-autoresize.py` in a terminal for immediate testing. `--once` applies the current layout and exits. Stop an already-running copy before updating; the lock prevents duplicate instances from managing the same session.
+
+Avoid competing saved fixed-resolution LXQt monitor profiles. The helper deliberately manages all `Virtual-*` output sizes and positions, and leaves other output names alone. Keep the SPICE guest agent installed and running; this helper only applies display modes and does not replace the agent.
+
+Logs are written to `~/.local/state/spice-guest-autoresize/helper.log` (or beneath `$XDG_STATE_HOME`). They include the process startup, DRM listener availability, applied modes and errors. If netlink subscription is unavailable, the helper logs the failure and continues with XRandR events only. Disable **SPICE guest automatic resize** in LXQt Session Settings → Autostart and stop its process to undo the automatic behavior.
+
+The parser, installer and a simulated DRM-only event path are tested without an X server or Python-Xlib installed. Live guest startup and resizing still need validation for the guest's desktop/driver combination. Run the tests with `python3 tests/spice_guest_autoresize_test.py`; CTest includes them when a Python 3 interpreter is available.

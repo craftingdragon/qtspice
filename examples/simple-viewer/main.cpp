@@ -1,3 +1,4 @@
+#include "../monitorwindows.h"
 #include "../audiomenu.h"
 #include "../spicelogging.h"
 #include "../sharedfolder.h"
@@ -72,6 +73,7 @@ int main(int argc, char **argv) {
     addScalingMenu(viewMenu, widget);
     addInputMenu(window.menuBar(), window.statusBar(), widget, &session);
     new Fullscreen(&window, viewMenu, widget);
+    new MonitorWindows(&window, &session, viewMenu);
     auto *resizeAction = viewMenu->addAction(QStringLiteral("Auto Resize Guest"));
     resizeAction->setCheckable(true);
     resizeAction->setChecked(ViewerSettings::autoResizeGuest());

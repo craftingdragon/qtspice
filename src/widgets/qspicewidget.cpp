@@ -55,7 +55,7 @@ Widget::Widget(QWidget *parent) : QWidget(parent), diagnostics_(std::make_unique
     connect(vertical_, &QScrollBar::valueChanged, this, qOverload<>(&Widget::update));
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
-    clipboardBridge_ = std::make_unique<ClipboardBridge>();
+
     resizeTimer_.setSingleShot(true);
     resizeTimer_.setInterval(250);
     connect(&resizeTimer_, &QTimer::timeout, this, [this] {
@@ -67,7 +67,7 @@ Widget::Widget(QWidget *parent) : QWidget(parent), diagnostics_(std::make_unique
             requested == lastRequestedSize_) return;
         lastRequestedSize_ = requested;
         Q_EMIT guestResizeRequested(requested);
-        session_->setDesiredDisplaySize(requested);
+        session_->setDesiredMonitorSize(monitor_, requested);
     });
 #ifdef QTSPICE_WAYLAND_POINTER_LOCK
     if (QGuiApplication::platformName().startsWith(QStringLiteral("wayland"))) {
@@ -92,21 +92,24 @@ Widget::Widget(QWidget *parent) : QWidget(parent), diagnostics_(std::make_unique
     }
 #endif
 }
-Widget::~Widget() { stopKeyboardCapture(); if (session_) session_->releaseAllInputs(); releaseMouseGrab(); }
+Widget::~Widget() { if (clipboardBridge_) { int n = clipboardBridge_->property("users").toInt()-1; clipboardBridge_->setProperty("users", n); if (n <= 0) clipboardBridge_->setActive(false); } stopKeyboardCapture(); if (session_ && hasFocus()) session_->releaseAllInputs(); releaseMouseGrab(); }
 void Widget::setSession(Session *session) {
     stopKeyboardCapture();
     resizeTimer_.stop();
     if (session_ && session_ != session) session_->setDesiredDisplaySize({});
     lastRequestedSize_ = {};
-    clipboardBridge_->setActive(false);
-    if (session_) session_->releaseAllInputs();
+
+    if (session_ && hasFocus()) session_->releaseAllInputs();
+    if (clipboardBridge_) {
+        int n = clipboardBridge_->property("users").toInt() - 1; clipboardBridge_->setProperty("users", n);
+        if (n <= 0) clipboardBridge_->setActive(false);
+    }
     releaseMouseGrab();
     guestCursor_ = QCursor();
     unsetCursor();
     if (session_) {
         disconnect(session_, nullptr, this, nullptr);
-        disconnect(session_, nullptr, clipboardBridge_.get(), nullptr);
-        disconnect(clipboardBridge_.get(), nullptr, session_, nullptr);
+
     }
     session_ = session;
     lockSynchronizer_->reset();
@@ -117,13 +120,34 @@ void Widget::setSession(Session *session) {
     statusText_ = QStringLiteral("Disconnected");
     update();
     if (!session_) { updateKeyboardCapture(); return; }
+    if (session_->state() == Session::State::Connecting) statusText_ = QStringLiteral("Connecting…");
+    else if (session_->state() == Session::State::Connected) statusText_ = QStringLiteral("Waiting for guest monitor…");
     connect(session_, &QObject::destroyed, this, [this] { stopKeyboardCapture(); updateKeyboardCapture(); });
     scheduleGuestResize();
-    connect(clipboardBridge_.get(), &ClipboardBridge::hostContentChanged, session_, &Session::setHostClipboardContent);
-    connect(session_, &Session::guestClipboardContent, clipboardBridge_.get(), &ClipboardBridge::applyGuestContent);
-    connect(session_, &Session::clipboardReadyChanged, clipboardBridge_.get(), &ClipboardBridge::setActive);
+    clipboardBridge_ = session_->findChild<ClipboardBridge *>(QStringLiteral("sessionClipboard"));
+    if (!clipboardBridge_) {
+        clipboardBridge_ = new ClipboardBridge(session_);
+        clipboardBridge_->setObjectName(QStringLiteral("sessionClipboard"));
+        connect(clipboardBridge_, &ClipboardBridge::hostContentChanged, session_, &Session::setHostClipboardContent);
+        connect(session_, &Session::guestClipboardContent, clipboardBridge_, &ClipboardBridge::applyGuestContent);
+        connect(session_, &Session::clipboardReadyChanged, clipboardBridge_, [bridge = clipboardBridge_](bool ready) { if (bridge) bridge->setActive(ready && bridge->property("users").toInt() > 0); });
+        clipboardBridge_->setActive(session_->clipboardReady());
+    }
+    clipboardBridge_->setProperty("users", clipboardBridge_->property("users").toInt() + 1);
     clipboardBridge_->setActive(session_->clipboardReady());
-    connect(session_, &Session::frameReady, this, [this](const QImage &image) { diagnostics_->add(QStringLiteral("received")); frame_ = image; updateDisplayGeometry(); updateGeometry(); update(); });
+    frame_ = session_->monitorFrame(monitor_);
+    const auto cursor = session_->monitorCursor(monitor_.channelId);
+    if (!cursor.image.isNull()) { guestCursor_ = QCursor(QPixmap::fromImage(cursor.image), cursor.hotspot.x(), cursor.hotspot.y()); setCursor(guestCursor_); }
+    connect(session_, &Session::frameReady, this, [this](const QImage &image) {
+        if (monitor_ != MonitorId{}) return;
+        frame_ = image; updateDisplayGeometry(); updateGeometry(); update();
+    });
+    connect(session_, &Session::monitorFrameReady, this, [this](MonitorId id, const QImage &image) {
+        if (id != monitor_ || id == MonitorId{}) return;
+        if (image.isNull() && hasFocus()) releaseInputCapture();
+        diagnostics_->add(QStringLiteral("received")); frame_ = image;
+        updateDisplayGeometry(); updateGeometry(); update();
+    });
     connect(session_, &Session::stateChanged, this, [this](Session::State state) {
         if (state == Session::State::Connecting) statusText_ = QStringLiteral("Connecting…");
         else if (state == Session::State::Connected) statusText_ = QStringLiteral("Waiting for display…");
@@ -135,7 +159,8 @@ void Widget::setSession(Session *session) {
         statusText_ = message;
         update();
     });
-    connect(session_, &Session::cursorChanged, this, [this](const QImage &image, int hotX, int hotY) {
+    connect(session_, &Session::monitorCursorChanged, this, [this](int channelId, const QImage &image, int hotX, int hotY) {
+        if (channelId != monitor_.channelId) return;
         guestCursor_ = image.isNull() ? QCursor() : QCursor(QPixmap::fromImage(image), hotX, hotY);
         if (!mouseGrabbed_) setCursor(guestCursor_);
     });
@@ -156,6 +181,13 @@ void Widget::setSession(Session *session) {
         updateKeyboardCapture();
     });
     updateKeyboardCapture();
+}
+void Widget::setMonitor(MonitorId id) {
+    if (id == monitor_) return;
+    releaseInputCapture(); monitor_ = id; lastRequestedSize_ = {};
+    frame_ = session_ ? session_->monitorFrame(id) : QImage{};
+    updateDisplayGeometry(); scheduleGuestResize(); update();
+    Q_EMIT monitorChanged(id);
 }
 Widget::ScalingMode Widget::scalingMode() const noexcept { return scalingMode_; }
 void Widget::setScalingMode(ScalingMode mode) {
@@ -289,7 +321,7 @@ void Widget::mouseMoveEvent(QMouseEvent *event) {
         }
         if (!QRectF(QPointF(), QSizeF(contentSize_)).contains(event->position())) return;
         QPoint p = displayPoint(event->position(), frame_.size(), frameRect());
-        session_->sendPointer(p.x(), p.y(), buttonMask(event->buttons()));
+        session_->sendMonitorPointer(monitor_, p.x(), p.y(), buttonMask(event->buttons()));
     }
 }
 void Widget::mousePressEvent(QMouseEvent *event) {
@@ -380,7 +412,7 @@ void Widget::hideEvent(QHideEvent *event) {
     resizeTimer_.stop();
     if (session_ && autoResizeGuest_) session_->setDesiredDisplaySize({});
     lastRequestedSize_ = {};
-    if (session_) session_->releaseAllInputs();
+    if (session_ && (hasFocus() || mouseGrabbed_)) session_->releaseAllInputs();
     releaseMouseGrab();
     QWidget::hideEvent(event);
 }

@@ -4,11 +4,28 @@
 #include <QString>
 #include <QImage>
 #include <QSize>
+#include <QRect>
+#include <QMap>
+#include <compare>
 #include <QtSpice/QSpiceConnection.h>
 #include <memory>
 #include <optional>
 
 namespace QtSpice {
+
+struct MonitorId {
+    int channelId = 0;
+    int monitorId = 0;
+    auto operator<=>(const MonitorId &) const = default;
+};
+inline size_t qHash(MonitorId id, size_t seed = 0) noexcept { return qHashMulti(seed, id.channelId, id.monitorId); }
+struct MonitorCursor { QImage image; QPoint hotspot; };
+struct MonitorInfo {
+    MonitorId id;
+    QRect geometry;
+    bool enabled = false;
+    bool operator==(const MonitorInfo &) const = default;
+};
 
 struct ClipboardContent {
     std::optional<QString> text;
@@ -66,6 +83,15 @@ public:
     void setHostClipboardContent(const ClipboardContent &content);
     void setHostClipboardText(const QString &text);
     void setDesiredDisplaySize(QSize size);
+    QList<MonitorInfo> monitors() const { return monitors_; }
+    MonitorCursor monitorCursor(int channelId) const { return cursors_.value(channelId); }
+    QImage monitorFrame(MonitorId id) const { return frames_.value(id); }
+    void setDesiredMonitorSize(MonitorId id, QSize size);
+    void setMonitorEnabled(MonitorId id, bool enabled);
+    void sendMonitorPointer(MonitorId id, int x, int y, int buttons);
+    void requestMonitorLayout(const QList<MonitorInfo> &layout);
+    bool monitorConfigurationAvailable() const { return monitorConfigurationAvailable_; }
+
 
 Q_SIGNALS:
     void audioChanged();
@@ -75,6 +101,12 @@ Q_SIGNALS:
     void channelAdded(int type, int id);
     void channelRemoved(int type, int id);
     void frameReady(const QImage &frame);
+    void monitorsChanged();
+    void monitorConfigurationStatusChanged(const QString &status);
+    void monitorConfigurationAvailableChanged(bool available);
+    void monitorFrameReady(QtSpice::MonitorId id, const QImage &frame);
+    void monitorCursorChanged(int channelId, const QImage &cursor, int hotX, int hotY);
+
     void cursorChanged(const QImage &cursor, int hotX, int hotY);
     void mouseModeChanged(QtSpice::Session::MouseMode mode);
     void inputReadyChanged(bool ready);
@@ -83,6 +115,10 @@ Q_SIGNALS:
     void guestClipboardText(const QString &text);
 
 private:
+    QList<MonitorInfo> monitors_;
+    QMap<MonitorId, QImage> frames_;
+    QMap<int, MonitorCursor> cursors_;
+    bool monitorConfigurationAvailable_ = false;
     SharingState sharingState_ = SharingState::Disabled;
     QString sharingError_;
     std::optional<SharedDirectory> sharedDirectory_;
@@ -105,3 +141,5 @@ private:
 Q_DECLARE_OPERATORS_FOR_FLAGS(QtSpice::Session::KeyboardLocks)
 
 Q_DECLARE_METATYPE(QtSpice::ClipboardContent)
+
+Q_DECLARE_METATYPE(QtSpice::MonitorId)

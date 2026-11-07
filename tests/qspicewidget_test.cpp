@@ -6,14 +6,19 @@
 #include <QTemporaryDir>
 #include <QSettings>
 #include "../examples/scalingmenu.h"
+#include "../examples/monitorwindows.h"
 #include "../examples/inputmenu.h"
 #include "../src/widgets/displaygeometry.h"
 
 namespace QtSpice {
 struct SessionTestAccess {
+    static void connected(Session &s) { s.setState(Session::State::Connected); }
+    static void monitors(Session &s, QList<MonitorInfo> m) { s.monitors_ = m; Q_EMIT s.monitorsChanged(); }
     static void ready(Session &session, bool ready) { session.setInputReady(ready); }
 };
 struct WidgetTestAccess {
+    static QString status(const Widget &w) { return w.statusText_; }
+    static QImage frame(const Widget &w) { return w.frame_; }
     static bool canSync(const Widget &widget) { return widget.canSynchronizeLocks(); }
     static void simulateCapture(Widget &widget) {
         widget.keyboardRequested_ = true;
@@ -24,6 +29,43 @@ struct WidgetTestAccess {
 class WidgetTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void lateMonitorUsesCurrentConnectionState() {
+        QtSpice::Session session;
+        QtSpice::SessionTestAccess::connected(session);
+        QtSpice::Widget extra;
+        extra.setMonitor({0,1}); extra.setSession(&session);
+        QCOMPARE(QtSpice::WidgetTestAccess::status(extra), QStringLiteral("Waiting for guest monitor…"));
+        session.disconnectFromHost();
+        QCOMPARE(QtSpice::WidgetTestAccess::status(extra), QStringLiteral("Disconnected"));
+    }
+    void monitorWindowLifecycle() {
+        QtSpice::Session session;
+        QMainWindow primary;
+        auto *view = primary.menuBar()->addMenu(QStringLiteral("View"));
+        new MonitorWindows(&primary, &session, view);
+        QtSpice::SessionTestAccess::monitors(session, {{{0,0}, {0,0,800,600}, true}, {{0,1}, {800,0,800,600}, true}});
+        QMainWindow *extra = nullptr;
+        for (auto *w : QApplication::topLevelWidgets()) if (w->windowTitle() == QStringLiteral("QtSpice · Monitor 0:1")) extra = qobject_cast<QMainWindow *>(w);
+        QVERIFY(extra); QVERIFY(extra->isVisible());
+        extra->close(); QVERIFY(!extra->isVisible());
+        QtSpice::SessionTestAccess::monitors(session, {{{0,0}, {0,0,800,600}, true}, {{0,1}, {}, false}});
+        QVERIFY(!extra->isVisible());
+    }
+    void independentMonitorFramesAndClipboard() {
+        QtSpice::Session session;
+        QtSpice::Widget first, second;
+        first.setAutoResizeGuest(false); second.setAutoResizeGuest(false);
+        first.setSession(&session); second.setMonitor({0,1}); second.setSession(&session);
+        QCOMPARE(session.findChildren<QObject *>(QStringLiteral("sessionClipboard")).size(), 1);
+        QImage a(10,10,QImage::Format_RGB32); a.fill(Qt::red);
+        QImage b(20,10,QImage::Format_RGB32); b.fill(Qt::blue);
+        session.frameReady(a); session.monitorFrameReady({0,1}, b);
+        QCOMPARE(QtSpice::WidgetTestAccess::frame(first), a);
+        QCOMPARE(QtSpice::WidgetTestAccess::frame(second), b);
+        session.monitorFrameReady({0,1}, {});
+        QVERIFY(QtSpice::WidgetTestAccess::frame(second).isNull());
+        QCOMPARE(QtSpice::WidgetTestAccess::frame(first), a);
+    }
     void keyboardEscapeAndShortcuts() {
         using S = QtSpice::Widget::KeyboardCaptureState;
         QtSpice::Widget widget;

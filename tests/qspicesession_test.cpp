@@ -1,6 +1,9 @@
 #include <QtSpice/QSpiceSession.h>
 #include "../src/core/clipboardcapability.h"
 #include <QSignalSpy>
+#undef signals
+#include "../src/core/qspicesession.h"
+namespace QtSpice { struct SessionTestAccess { static void observed(Session &s, const QList<MonitorInfo> &layout, bool pending) { s.worker_->layoutPending = pending; s.worker_->observeMonitorLayout(layout); } static void actual(Session &s, const QList<MonitorInfo> &layout) { s.monitors_ = layout; } static bool pending(Session &s) { return s.worker_->layoutPending; } static auto &desired(Session &s) { return s.worker_->desiredMonitors; } }; }
 #include <QtTest>
 #include <QLoggingCategory>
 #include <QScopeGuard>
@@ -16,6 +19,35 @@ void captureConnectionLog(QtMsgType, const QMessageLogContext &context, const QS
 class SessionTest : public QObject {
     Q_OBJECT
 private slots:
+    void alreadyAppliedLayoutNeedsNoNewGuestEvent() {
+        QtSpice::Session s;
+        const QList<QtSpice::MonitorInfo> actual{{{0,0},{0,0,800,600},true},{{0,1},{800,0,1024,768},true}};
+        QtSpice::SessionTestAccess::actual(s, actual);
+        QSignalSpy status(&s, &QtSpice::Session::monitorConfigurationStatusChanged);
+        s.requestMonitorLayout(actual);
+        QVERIFY(!QtSpice::SessionTestAccess::pending(s));
+        QVERIFY(!status.isEmpty()); QVERIFY(status.last().first().toString().isEmpty());
+        s.setDesiredMonitorSize({0,1}, QSize(1280,720));
+        QVERIFY(QtSpice::SessionTestAccess::pending(s));
+        s.requestMonitorLayout(actual); // Restore the already-applied layout while another request is pending.
+        QVERIFY(!QtSpice::SessionTestAccess::pending(s));
+    }
+    void lateGuestTopologyRetiresTimedOutWarning() {
+        QtSpice::Session s;
+        const QList<QtSpice::MonitorInfo> requested{{{0,0}, {0,0,800,600}, true}, {{0,1}, {800,0,1024,768}, true}};
+        s.requestMonitorLayout(requested);
+        QSignalSpy status(&s, &QtSpice::Session::monitorConfigurationStatusChanged);
+        const QList<QtSpice::MonitorInfo> actual{{{0,0}, {0,0,800,600}, true}, {{0,1}, {800,0,640,480}, true}};
+        QtSpice::SessionTestAccess::observed(s, actual, true);
+        QVERIFY(status.isEmpty()); // Still pending: a different size is not confirmation.
+        QtSpice::SessionTestAccess::observed(s, actual, false); // New topology after timeout/manual activation.
+        QVERIFY(!status.isEmpty()); QVERIFY(status.last().first().toString().isEmpty());
+        QCOMPARE(QtSpice::SessionTestAccess::desired(s).value({0,1}).geometry.size(), QSize(640,480));
+        s.requestMonitorLayout(requested);
+        status.clear();
+        QtSpice::SessionTestAccess::observed(s, requested, true);
+        QVERIFY(!status.isEmpty()); QVERIFY(status.last().first().toString().isEmpty());
+    }
     void connectionDiagnostics() {
         connectionMessages.clear();
         const auto previousHandler = qInstallMessageHandler(captureConnectionLog);
@@ -54,6 +86,26 @@ private slots:
         QVERIFY(!QtSpice::clipboardByDemandReady(true, false));
         QVERIFY(!QtSpice::clipboardByDemandReady(false, true));
         QVERIFY(QtSpice::clipboardByDemandReady(true, true));
+    }
+    void monitorLayoutPreservesOtherHeads() {
+        QtSpice::Session s;
+        s.requestMonitorLayout({{{0,0}, {0,0,800,600}, true}, {{0,1}, {800,0,640,480}, true}});
+        s.setDesiredMonitorSize({0,1}, {1280,720});
+        auto &desired = QtSpice::SessionTestAccess::desired(s);
+        QCOMPARE(desired.size(), 2);
+        QCOMPARE(desired.value({0,0}).geometry.size(), QSize(800,600));
+        QCOMPARE(desired.value({0,1}).geometry, QRect(800,0,1280,720));
+        s.setMonitorEnabled({0,1}, false);
+        QVERIFY(!desired.value({0,1}).enabled);
+        s.setMonitorEnabled({0,1}, true);
+        QCOMPARE(desired.value({0,1}).geometry.size(), QSize(1280,720));
+        s.setMonitorEnabled({}, false);
+        QVERIFY(desired.value({}).enabled);
+        const auto before = desired;
+        s.requestMonitorLayout({{{0,1},{0,0,800,600},true}, {{1,0},{800,0,800,600},true}});
+        QCOMPARE(desired, before); // Colliding wire IDs must not send a partial layout.
+        s.requestMonitorLayout({{{0,0},{0,0,20000,600},true}});
+        QCOMPARE(desired, before);
     }
     void initialState() {
         QtSpice::Session session;

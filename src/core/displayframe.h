@@ -3,6 +3,12 @@
 #include <spice-client.h>
 
 namespace QtSpice {
+inline QImage copyMonitorRect(const SpiceDisplayPrimary &p, QRect r) {
+    if (r.isEmpty() || r.x() < 0 || r.y() < 0 || qint64(r.x()) + r.width() > p.width || qint64(r.y()) + r.height() > p.height) return {};
+    int bytes = p.format == 80 ? 2 : 4;
+    if (!p.data || p.stride <= 0 || p.width <= 0 || p.height <= 0 || p.width > 16384 || p.height > 16384 || p.stride < qint64(p.width)*bytes || qint64(p.stride)*p.height > 512*1024*1024) return {};
+    return copyPrimary(p.format, r.width(), r.height(), p.stride, p.data + qint64(r.y())*p.stride + qint64(r.x())*bytes);
+}
 // Monitor coordinates describe the visible area inside the backing surface.
 // Reject transient configurations outside that surface instead of padding with
 // uninitialized pixels or exposing the previous desktop around the edges.
