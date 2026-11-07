@@ -2,6 +2,7 @@
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceWidget.h>
 #include "fullscreen.h"
+#include "reconnect.h"
 #include "inputmenu.h"
 #include "scalingmenu.h"
 #include "audiomenu.h"
@@ -22,6 +23,11 @@ public:
         connect(session, &QtSpice::Session::monitorsChanged, this, [this] { refresh(); });
         connect(session, &QtSpice::Session::monitorConfigurationAvailableChanged, this, [this] { refreshMenus(); });
         connect(session, &QtSpice::Session::monitorConfigurationStatusChanged, this, [this](const QString &status) { primary_->statusBar()->showMessage(status); for (auto w : windows_) if (w) w->statusBar()->showMessage(status); });
+        connect(session, &QtSpice::Session::monitorLayoutRequested, this, [this](const auto &layout) { if (!restoring_) { requested_ = layout; for (auto &head : saved_) for (const auto &requested : layout) if (head.id == requested.id) head = requested; } });
+        connect(session, &QtSpice::Session::stateChanged, this, [this](auto state) {
+            if (state == QtSpice::Session::State::Disconnected) { recovering_ = !saved_.isEmpty(); restored_ = false; }
+        });
+        connect(session, &QtSpice::Session::monitorConfigurationAvailableChanged, this, [this](bool) { restore(); });
         refresh();
     }
     ~MonitorWindows() override { closing_ = true; for (auto window : windows_) if (window) delete window; }
@@ -32,6 +38,8 @@ private:
     QList<QPointer<QMenu>> menus_;
     QSet<QtSpice::MonitorId> pending_;
     bool closing_ = false;
+    bool recovering_ = false, restored_ = false, restoring_ = false;
+    QList<QtSpice::MonitorInfo> saved_, requested_;
     QSet<QtSpice::MonitorId> disabling_;
     bool eventFilter(QObject *object, QEvent *event) override {
         if (event->type() == QEvent::Close && !closing_) {
@@ -41,6 +49,7 @@ private:
                 session_->disconnectFromHost();
             } else {
                 for (auto it = windows_.begin(); it != windows_.end(); ++it) if (it.value() == object) {
+                    for (auto &head : saved_) if (head.id == it.key()) head.enabled = false;
                     disabling_.insert(it.key());
                     session_->setMonitorEnabled(it.key(), false);
                     pending_.remove(it.key());
@@ -85,10 +94,14 @@ private:
             const QString path = QFileDialog::getSaveFileName(window, QStringLiteral("Save next guest frame"), QStringLiteral("frame.png"), QStringLiteral("PNG image (*.png)"));
             if (path.isEmpty()) return;
             snapshot->setEnabled(false);
+            auto *pending = new QObject(window);
+            connect(session_, &QtSpice::Session::stateChanged, pending, [pending, snapshot](auto state) {
+                if (state == QtSpice::Session::State::Disconnected) { snapshot->setEnabled(true); delete pending; }
+            });
             auto connection = std::make_shared<QMetaObject::Connection>();
-            *connection = connect(session_, &QtSpice::Session::monitorFrameReady, window, [window, snapshot, id, path, connection](QtSpice::MonitorId source, const QImage &image) {
+            *connection = connect(session_, &QtSpice::Session::monitorFrameReady, pending, [window, snapshot, id, path, connection, pending](QtSpice::MonitorId source, const QImage &image) {
                 if (source != id || image.isNull()) return;
-                QObject::disconnect(*connection); snapshot->setEnabled(true);
+                QObject::disconnect(*connection); pending->deleteLater(); snapshot->setEnabled(true);
                 window->statusBar()->showMessage(image.save(path) ? QStringLiteral("Frame saved") : QStringLiteral("Could not save frame"));
             });
         });
@@ -97,10 +110,26 @@ private:
         resize->setCheckable(true); resize->setChecked(ViewerSettings::autoResizeGuest());
         widget->setAutoResizeGuest(resize->isChecked());
         connect(resize, &QAction::toggled, widget, &QtSpice::Widget::setAutoResizeGuest);
+        for (auto *child : primary_->children()) if (auto *retry = dynamic_cast<Reconnect *>(child)) retry->attach(window);
         addMenu(view); window->resize(1024, 768); window->show();
+    }
+    void restore() {
+        if (!session_->monitorConfigurationAvailable() || !recovering_ || restored_) return;
+            auto layout = session_->monitors();
+            if (layout.isEmpty()) return;
+            for (auto &head : layout) for (const auto &saved : saved_) if (saved.id == head.id) head = saved;
+            restored_ = true; restoring_ = true; session_->requestMonitorLayout(layout); restoring_ = false;
     }
     void refresh() {
         if (closing_) return;
+        if (session_->monitors().isEmpty()) return; // Transient teardown must not hide windows.
+        if (!recovering_) {
+            saved_ = session_->monitors();
+            for (auto &head : saved_) for (const auto &requested : requested_) if (requested.id == head.id) head = requested;
+        }
+        restore();
+        if (recovering_ && !restored_) return;
+        if (restored_) recovering_ = false;
         for (const auto &m : session_->monitors()) if (m.enabled && !disabling_.contains(m.id)) { pending_.remove(m.id); open(m.id); }
         for (auto it = windows_.begin(); it != windows_.end(); ++it) {
             bool active = pending_.contains(it.key());

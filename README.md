@@ -4,7 +4,7 @@ Qt 6 SPICE client library based on `spice-client-glib-2.0`, without GTK widgets.
 
 ## Build
 
-Requires a C++20 compiler, CMake 3.24+, Qt 6 Core, Gui, Widgets, Test, Multimedia, WebEngineWidgets and Network, pkg-config, and `spice-client-glib-2.0` development files. Native Wayland relative pointer capture is built when Qt 6.5+, Qt GuiPrivate headers, `wayland-client`, `wayland-protocols`, and `wayland-scanner` are available.
+Requires a C++20 compiler, CMake 3.24+, Qt 6 Core, Gui, Widgets, Test, Multimedia, WebEngineWidgets, WebChannel and Network, pkg-config, and `spice-client-glib-2.0` development files. Native Wayland relative pointer capture is built when Qt 6.5+, Qt GuiPrivate headers, `wayland-client`, `wayland-protocols`, and `wayland-scanner` are available.
 
 ```sh
 cmake -S . -B build
@@ -214,3 +214,13 @@ Avoid competing saved fixed-resolution LXQt monitor profiles. The helper deliber
 Logs are written to `~/.local/state/spice-guest-autoresize/helper.log` (or beneath `$XDG_STATE_HOME`). They include the process startup, DRM listener availability, applied modes and errors. If netlink subscription is unavailable, the helper logs the failure and continues with XRandR events only. Disable **SPICE guest automatic resize** in LXQt Session Settings → Autostart and stop its process to undo the automatic behavior.
 
 The parser, installer and a simulated DRM-only event path are tested without an X server or Python-Xlib installed. Live guest startup and resizing still need validation for the guest's desktop/driver combination. Run the tests with `python3 tests/spice_guest_autoresize_test.py`; CTest includes them when a Python 3 interpreter is available.
+
+### Reconnecting consoles
+
+After a disconnect, use **Connection → Reconnect** or the button in the console. Each click makes one attempt; **Cancel Reconnect** stops it. Attempts time out after 30 seconds. There are no automatic retries. The disconnected controls also work in fullscreen.
+
+Direct connections reuse their endpoint. For a local `.vv`, Reconnect rereads the original file; **Connection → Load Connection File…** selects a fresh ticket without restarting simple-viewer. CLI network proxy overrides and current folder-sharing choices are retained. The `--snapshot` command keeps its existing noninteractive behavior.
+
+For QEMU consoles opened through the Proxmox browser, reconnect requests fresh credentials for the same VM through the browser's existing login. Keep the browser open on the original Proxmox server. If login expired, log in there and click Reconnect again. Unsupported pages and legacy downloaded consoles cannot refresh credentials this way. VM migration to another node requires reopening its console from Proxmox. Qt WebChannel is required for the Proxmox viewer.
+
+Console windows retain geometry, fullscreen and input/scaling preferences during recovery. Previously requested monitor settings are restored for heads advertised by the reconnected guest; this still requires working guest-agent support. Closing an extra monitor while disconnected disables its restoration. Pending snapshots and held input are cleared; click the console to resume capture. Connection data and topology are not persisted by reconnect support.

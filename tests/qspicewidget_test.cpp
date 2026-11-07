@@ -12,6 +12,7 @@
 
 namespace QtSpice {
 struct SessionTestAccess {
+    static void available(Session &s) { s.monitorConfigurationAvailable_ = true; Q_EMIT s.monitorConfigurationAvailableChanged(true); }
     static void connected(Session &s) { s.setState(Session::State::Connected); }
     static void monitors(Session &s, QList<MonitorInfo> m) { s.monitors_ = m; Q_EMIT s.monitorsChanged(); }
     static void ready(Session &session, bool ready) { session.setInputReady(ready); }
@@ -50,6 +51,26 @@ private Q_SLOTS:
         extra->close(); QVERIFY(!extra->isVisible());
         QtSpice::SessionTestAccess::monitors(session, {{{0,0}, {0,0,800,600}, true}, {{0,1}, {}, false}});
         QVERIFY(!extra->isVisible());
+    }
+    void reconnectRetainsWindowsAndRestoresRequestedLayout() {
+        QtSpice::Session session; QMainWindow primary;
+        auto *view = primary.menuBar()->addMenu(QStringLiteral("View"));
+        new MonitorWindows(&primary, &session, view);
+        QtSpice::SessionTestAccess::connected(session);
+        const QList<QtSpice::MonitorInfo> original{{{0,0},{0,0,800,600},true}, {{0,1},{800,0,800,600},true}};
+        QtSpice::SessionTestAccess::monitors(session, original);
+        QPointer<QMainWindow> extra;
+        for (auto *w : QApplication::topLevelWidgets()) if (w->windowTitle() == QStringLiteral("QtSpice · Monitor 0:1")) extra = qobject_cast<QMainWindow *>(w);
+        QVERIFY(extra); extra->resize(750, 550); auto geometry = extra->geometry();
+        auto desired = original; desired[1].geometry.setSize({1024,768}); session.requestMonitorLayout(desired);
+        session.disconnectFromHost(); QVERIFY(extra->isVisible()); QCOMPARE(extra->geometry(), geometry);
+        QSignalSpy requests(&session, &QtSpice::Session::monitorLayoutRequested);
+        QtSpice::SessionTestAccess::connected(session);
+        QtSpice::SessionTestAccess::monitors(session, original);
+        QtSpice::SessionTestAccess::available(session);
+        QVERIFY(!requests.isEmpty());
+        QCOMPARE(qvariant_cast<QList<QtSpice::MonitorInfo>>(requests.last().first()), desired);
+        QCOMPARE(extra->geometry(), geometry);
     }
     void independentMonitorFramesAndClipboard() {
         QtSpice::Session session;

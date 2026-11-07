@@ -1,4 +1,5 @@
 #include "../monitorwindows.h"
+#include "ticketbridge.h"
 #include "../audiomenu.h"
 #include "../spicelogging.h"
 #include "../browserlogging.h"
@@ -39,7 +40,7 @@
 
 class ConsoleWindow final : public QMainWindow {
 public:
-    explicit ConsoleWindow(const QtSpice::ConnectionConfig &config) : session_(this) {
+    explicit ConsoleWindow(const QtSpice::ConnectionConfig &config, Reconnect::Source source = {}) : session_(this) {
         setAttribute(Qt::WA_DeleteOnClose);
         setWindowTitle(QStringLiteral("QtSpice Console"));
         auto *widget = new QtSpice::Widget(this);
@@ -97,6 +98,8 @@ public:
                 statusBar()->showMessage(ready ? QStringLiteral("Connected · Clipboard ready")
                     : QStringLiteral("Connected · Clipboard unavailable: guest agent disconnected or lacks support"));
         });
+        auto *reconnect = new Reconnect(this, &session_);
+        reconnect->source = std::move(source); reconnect->sharing_ = config.sharedDirectory;
         resize(1100, 800);
         show();
         session_.connectToConfig(config);
@@ -115,6 +118,16 @@ public:
         view_ = new QWebEngineView(this);
         view_->setPage(new QWebEnginePage(profile_, view_));
         setCentralWidget(view_);
+        auto *tickets = new TicketBridge(view_->page());
+        connect(tickets, &TicketBridge::errorOccurred, this, [this](const QString &error) { statusBar()->showMessage(error); });
+        tickets->opened = [this](auto config, Reconnect::Source source) {
+            config.networkProxy = networkProxy_.toString(QUrl::FullyEncoded); config.sharedDirectory = sharedDirectory_;
+            auto proxy = config.networkProxy;
+            new ConsoleWindow(config, [source, proxy](Reconnect::Result done) {
+                source([done, proxy](auto config, QString error) { if (config) config->networkProxy = proxy; done(config, error); });
+            });
+        };
+
         auto *bar = addToolBar(QStringLiteral("Navigation"));
         bar->addAction(QStringLiteral("Back"), view_, &QWebEngineView::back);
         bar->addAction(QStringLiteral("Forward"), view_, &QWebEngineView::forward);

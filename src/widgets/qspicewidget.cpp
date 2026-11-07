@@ -150,8 +150,8 @@ void Widget::setSession(Session *session) {
     });
     connect(session_, &Session::stateChanged, this, [this](Session::State state) {
         if (state == Session::State::Connecting) statusText_ = QStringLiteral("Connecting…");
-        else if (state == Session::State::Connected) statusText_ = QStringLiteral("Waiting for display…");
-        else { statusText_ = QStringLiteral("Disconnected"); frame_ = {}; updateDisplayGeometry(); releaseMouseGrab(); }
+        else if (state == Session::State::Connected) { statusText_ = QStringLiteral("Waiting for display…"); lastRequestedSize_ = {}; scheduleGuestResize(); }
+        else { statusText_ = QStringLiteral("Disconnected"); frame_ = {}; updateDisplayGeometry(); releaseInputCapture(); }
         updateKeyboardCapture();
         update();
     });

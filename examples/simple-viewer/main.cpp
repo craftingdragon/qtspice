@@ -1,4 +1,6 @@
 #include "../monitorwindows.h"
+#include "../reconnect.h"
+#include <QFileDialog>
 #include "../audiomenu.h"
 #include "../spicelogging.h"
 #include "../sharedfolder.h"
@@ -96,10 +98,30 @@ int main(int argc, char **argv) {
             }
         });
     }
-    QObject::connect(&session, &QtSpice::Session::errorOccurred, widget, [widget](const QString &message) {
-        qWarning().noquote() << "SPICE connection:" << message;
-        QMessageBox::warning(widget, QStringLiteral("SPICE connection"), message);
-    });
+    if (!parser.isSet(snapshot)) {
+        auto *reconnect = new Reconnect(&window, &session);
+        reconnect->sharing_ = sharedDirectory;
+        auto filePath = std::make_shared<QString>(target.endsWith(QStringLiteral(".vv"), Qt::CaseInsensitive) ? target : QString());
+        reconnect->source = [filePath, config](Reconnect::Result done) mutable {
+            auto next = config;
+            if (!filePath->isEmpty()) {
+                QFile file(*filePath); QString error;
+                if (!file.open(QIODevice::ReadOnly)) { done({}, QStringLiteral("Cannot read connection file")); return; }
+                auto parsed = QtSpice::parseVv(file.read(1024 * 1024 + 1), &error);
+                if (!parsed) { done({}, error); return; }
+                next = *parsed; next.networkProxy = config.networkProxy;
+            }
+            done(next, {});
+        };
+        QMenu *connectionMenu = nullptr;
+        for (auto *action : window.menuBar()->actions()) if (action->text() == QStringLiteral("Connection")) connectionMenu = action->menu();
+        auto *load = connectionMenu->addAction(QStringLiteral("Load Connection File…"));
+        QObject::connect(&session, &QtSpice::Session::stateChanged, load, [load](auto state) { load->setEnabled(state == QtSpice::Session::State::Disconnected); });
+        QObject::connect(load, &QAction::triggered, &window, [filePath, reconnect, &window] {
+            const auto path = QFileDialog::getOpenFileName(&window, QStringLiteral("Load SPICE connection"), {}, QStringLiteral("SPICE connection (*.vv)"));
+            if (!path.isEmpty()) { *filePath = path; reconnect->start(); }
+        });
+    }
     window.resize(1024, 768);
     window.show();
     config.sharedDirectory = sharedDirectory;

@@ -102,6 +102,7 @@ Q_SIGNALS:
     void channelRemoved(int type, int id);
     void frameReady(const QImage &frame);
     void monitorsChanged();
+    void monitorLayoutRequested(const QList<QtSpice::MonitorInfo> &layout);
     void monitorConfigurationStatusChanged(const QString &status);
     void monitorConfigurationAvailableChanged(bool available);
     void monitorFrameReady(QtSpice::MonitorId id, const QImage &frame);

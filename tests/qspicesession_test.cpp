@@ -107,6 +107,20 @@ private slots:
         s.requestMonitorLayout({{{0,0},{0,0,20000,600},true}});
         QCOMPARE(desired, before);
     }
+    void cancelledAttemptsCannotPublishLateFailure() {
+        QtSpice::Session session;
+        QSignalSpy errors(&session, &QtSpice::Session::errorOccurred);
+        for (int i = 0; i < 10; ++i) {
+            session.connectToHost(QStringLiteral("127.0.0.1"), 1);
+            session.disconnectFromHost();
+            QCoreApplication::processEvents();
+            QCOMPARE(session.state(), QtSpice::Session::State::Disconnected);
+        }
+        QTest::qWait(30);
+        QVERIFY(errors.isEmpty());
+        QVERIFY(!session.inputReady()); QVERIFY(!session.clipboardReady());
+        QVERIFY(session.monitors().isEmpty());
+    }
     void initialState() {
         QtSpice::Session session;
         QCOMPARE(session.state(), QtSpice::Session::State::Disconnected);

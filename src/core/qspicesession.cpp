@@ -106,7 +106,7 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
             w->keyboardReadiness.initialized = true;
             if (!w->inputsReady && w->keyboardReadiness.ready()) {
                 w->inputsReady = true;
-                QMetaObject::invokeMethod(w->owner, [owner = w->owner] { owner->setInputReady(true); }, Qt::QueuedConnection);
+                QMetaObject::invokeMethod(w->owner, [owner = w->owner, generation = w->generation] { if (generation != owner->worker_->generation) return; owner->setInputReady(true); }, Qt::QueuedConnection);
             }
         }), self);
     } else if (type == SPICE_CHANNEL_CURSOR) {
@@ -118,7 +118,7 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
         (type == SPICE_CHANNEL_CURSOR)) {
         spice_channel_connect(channel);
     }
-    QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id] { Q_EMIT owner->channelAdded(type, id); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id, generation = self->generation] { if (generation != owner->worker_->generation) return; Q_EMIT owner->channelAdded(type, id); }, Qt::QueuedConnection);
 }
 
 void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gpointer data) {
@@ -138,7 +138,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
         self->keyboardReadiness = {};
         self->pressedKeys.clear();
         self->pressedButtons.clear();
-        QMetaObject::invokeMethod(self->owner, [owner = self->owner] { owner->setInputReady(false); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(self->owner, [owner = self->owner, generation = self->generation] { if (generation != owner->worker_->generation) return; owner->setInputReady(false); }, Qt::QueuedConnection);
     }
     if (channel == SPICE_CHANNEL(self->cursor)) self->cursor = nullptr;
     if (channel == SPICE_CHANNEL(self->main)) {
@@ -147,10 +147,10 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
         self->sentDisplaySize = {};
         self->clipboardReady = false;
         self->clipboard.reset(false);
-        QMetaObject::invokeMethod(self->owner, [owner = self->owner] { owner->setClipboardReady(false); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(self->owner, [owner = self->owner, generation = self->generation] { if (generation != owner->worker_->generation) return; owner->setClipboardReady(false); }, Qt::QueuedConnection);
     }
     g_signal_handlers_disconnect_by_data(channel, self);
-    QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id] { Q_EMIT owner->channelRemoved(type, id); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id, generation = self->generation] { if (generation != owner->worker_->generation) return; Q_EMIT owner->channelRemoved(type, id); }, Qt::QueuedConnection);
 }
 
 void Session::Worker::refreshMonitors() {
@@ -258,7 +258,7 @@ void Session::Worker::onCursorSet(SpiceCursorChannel *channel, gint width, gint 
     int id = 0; g_object_get(channel, "channel-id", &id, nullptr);
     self->owner->cursors_[id] = {image, QPoint(hotX, hotY)};
     Q_EMIT self->owner->monitorCursorChanged(id, image, hotX, hotY);
-    QMetaObject::invokeMethod(self->owner, [owner = self->owner, image, hotX, hotY] { Q_EMIT owner->cursorChanged(image, hotX, hotY); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, image, hotX, hotY, generation = self->generation] { if (generation != owner->worker_->generation) return; Q_EMIT owner->cursorChanged(image, hotX, hotY); }, Qt::QueuedConnection);
 }
 
 void Session::Worker::onCursorHide(SpiceCursorChannel *channel, gpointer data) {
@@ -266,7 +266,7 @@ void Session::Worker::onCursorHide(SpiceCursorChannel *channel, gpointer data) {
     int id = 0; g_object_get(channel, "channel-id", &id, nullptr);
     self->owner->cursors_.remove(id);
     Q_EMIT self->owner->monitorCursorChanged(id, {}, 0, 0);
-    QMetaObject::invokeMethod(self->owner, [owner = self->owner] { Q_EMIT owner->cursorChanged({}, 0, 0); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, generation = self->generation] { if (generation != owner->worker_->generation) return; Q_EMIT owner->cursorChanged({}, 0, 0); }, Qt::QueuedConnection);
 }
 
 void Session::Worker::onMouseUpdate(SpiceMainChannel *channel, gpointer data) {
@@ -277,7 +277,7 @@ void Session::Worker::onMouseUpdate(SpiceMainChannel *channel, gpointer data) {
     if (mode != SPICE_MOUSE_MODE_CLIENT && mode != SPICE_MOUSE_MODE_SERVER) return;
     const auto value = mode == SPICE_MOUSE_MODE_SERVER ? MouseMode::Server : MouseMode::Client;
     self->hasPointer = false;
-    QMetaObject::invokeMethod(self->owner, [owner = self->owner, value] { owner->setMouseMode(value); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, value, generation = self->generation] { if (generation != owner->worker_->generation) return; owner->setMouseMode(value); }, Qt::QueuedConnection);
 }
 
 void Session::Worker::onAgentUpdate(SpiceMainChannel *channel, gpointer data) {
@@ -295,7 +295,7 @@ void Session::Worker::onAgentUpdate(SpiceMainChannel *channel, gpointer data) {
     if (self->clipboardReady == ready) return;
     self->clipboardReady = ready;
     self->clipboard.reset(ready);
-    QMetaObject::invokeMethod(self->owner, [owner = self->owner, ready] { owner->setClipboardReady(ready); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, ready, generation = self->generation] { if (generation != owner->worker_->generation) return; owner->setClipboardReady(ready); }, Qt::QueuedConnection);
 }
 
 gboolean Session::Worker::onClipboardGrab(SpiceMainChannel *channel, guint selection, gpointer types, guint count, gpointer data) {
@@ -344,7 +344,7 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
         }
         const bool ready = self->inputsReady;
         qCDebug(inputLog) << "inputs channel event" << event << "ready" << ready;
-        QMetaObject::invokeMethod(self->owner, [owner = self->owner, ready] { owner->setInputReady(ready); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(self->owner, [owner = self->owner, ready, generation = self->generation] { if (generation != owner->worker_->generation) return; owner->setInputReady(ready); }, Qt::QueuedConnection);
     }
     if (self->webdav.contains(channel)) {
         if (event == SPICE_CHANNEL_OPENED) self->webdavOpened.insert(channel);
@@ -360,7 +360,7 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
         self->mainOpened = true;
         onMouseUpdate(SPICE_MAIN_CHANNEL(channel), self);
         onAgentUpdate(SPICE_MAIN_CHANNEL(channel), self);
-        QMetaObject::invokeMethod(self->owner, [owner = self->owner] { owner->setState(State::Connected); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(self->owner, [owner = self->owner, generation = self->generation] { if (generation != owner->worker_->generation) return; owner->setState(State::Connected); }, Qt::QueuedConnection);
     } else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) {
         self->mainOpened = false;
         self->sentDisplaySize = {};
@@ -368,9 +368,11 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
         self->keyboardReadiness = {};
         const GError *error = spice_channel_get_error(channel);
         QString message = error ? QString::fromUtf8(error->message) : QStringLiteral("SPICE connection closed");
-        QMetaObject::invokeMethod(self->owner, [owner = self->owner, message] {
+        QMetaObject::invokeMethod(self->owner, [owner = self->owner, message, generation = self->generation] { if (generation != owner->worker_->generation) return;
             const bool unexpected = owner->state() != State::Disconnected;
             owner->setState(State::Disconnected);
+            if (generation != owner->worker_->generation) return;
+            owner->worker_->disconnect();
             if (unexpected) Q_EMIT owner->errorOccurred(message);
         }, Qt::QueuedConnection);
     }
@@ -425,14 +427,17 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
     g_signal_connect(session, "channel-destroy", G_CALLBACK(onChannelDestroy), this);
     if (!spice_session_connect(session)) {
         qCDebug(connectionLog) << owner << "connection start rejected";
-        QMetaObject::invokeMethod(owner, [owner = owner] {
+        QMetaObject::invokeMethod(owner, [owner = owner, generation = this->generation] { if (generation != owner->worker_->generation) return;
             owner->setState(State::Disconnected);
+            if (generation != owner->worker_->generation) return;
+            owner->worker_->disconnect();
             Q_EMIT owner->errorOccurred(QStringLiteral("Could not start SPICE connection"));
         }, Qt::QueuedConnection);
     }
 }
 
 void Session::Worker::disconnect() {
+    ++generation;
     if (session) qCDebug(connectionLog) << owner << "local teardown requested";
     audio.detach();
     ++sharingGeneration;
@@ -441,16 +446,17 @@ void Session::Worker::disconnect() {
     owner->sharedDirectory_.reset();
     owner->sharingError_.clear();
     owner->updateSharingState();
-    if (!session) { proxy.reset(); return; }
-    releaseInputs();
-    GList *channels = spice_session_get_channels(session);
-    for (GList *item = channels; item; item = item->next)
-        g_signal_handlers_disconnect_by_data(item->data, this);
-    g_list_free(channels);
-    g_signal_handlers_disconnect_by_data(session, this);
-    spice_session_disconnect(session);
-    g_object_unref(session);
-    session = nullptr;
+    if (session) {
+        releaseInputs();
+        GList *channels = spice_session_get_channels(session);
+        for (GList *item = channels; item; item = item->next)
+            g_signal_handlers_disconnect_by_data(item->data, this);
+        g_list_free(channels);
+        g_signal_handlers_disconnect_by_data(session, this);
+        spice_session_disconnect(session);
+        g_object_unref(session);
+        session = nullptr;
+    }
     proxy.reset();
     displays.clear(); desiredMonitors.clear(); awaitingTopology = true; layoutPending = false; ++layoutSerial;
     owner->cursors_.clear();
@@ -676,8 +682,10 @@ void Session::connectToConfig(const ConnectionConfig &config) {
 }
 
 void Session::disconnectFromHost() {
-    worker_->post([worker = worker_.get()] { worker->disconnect(); });
+    const auto generation = worker_->generation;
     setState(State::Disconnected);
+    if (generation != worker_->generation) return;
+    worker_->post([worker = worker_.get()] { worker->disconnect(); });
 }
 
 void Session::sendCtrlAltDelete() {
@@ -802,6 +810,7 @@ void Session::requestMonitorLayout(const QList<MonitorInfo> &layout) {
         if (m.enabled && (m.geometry.isEmpty() || m.geometry.x() < 0 || m.geometry.y() < 0 || m.geometry.right() >= 16384 || m.geometry.bottom() >= 16384)) return;
         validated[m.id] = m;
     }
+    if (validated != worker_->desiredMonitors) Q_EMIT monitorLayoutRequested(layout);
     const bool unchangedPending = validated == worker_->desiredMonitors && worker_->layoutPending;
     worker_->desiredMonitors = validated;
     worker_->layoutPending = true;

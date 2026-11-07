@@ -14,6 +14,7 @@
 struct QtSpice::Session::Worker {
     explicit Worker(Session *owner);
     ~Worker();
+    quint64 generation = 0;
     void post(std::function<void()> task);
     void connectToConfig(const ConnectionConfig &config);
     void disconnect();
