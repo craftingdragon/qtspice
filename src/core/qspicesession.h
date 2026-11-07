@@ -8,6 +8,7 @@
 #include "tunnelproxy.h"
 #include "qspiceaudio.h"
 #include "qspiceusb.h"
+#include "filetransfer.h"
 #include "intervalstats.h"
 #include "keyboardcommands.h"
 #include "clipboardtransfer.h"
@@ -26,6 +27,7 @@ struct QtSpice::Session::Worker {
     quint64 pendingFrames = 0;
     AudioPlayback audio;
     UsbController usb;
+    FileTransferController transfers;
     std::unique_ptr<QtSpice::TunnelProxy> proxy;
 
     QSet<SpiceChannel *> webdav;

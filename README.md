@@ -252,3 +252,25 @@ USB selection is manual: hotplugging and reconnecting never automatically attach
 devices. Disconnecting the console releases devices. No selections are saved,
 and device updates use native events rather than periodic polling. Linux is the
 initial validation platform.
+
+### Sending files to the guest
+
+Choose **Files → Send Files…**, or drop local files onto any console window.
+Files are sent one at a time through the SPICE guest agent; further selections
+append to the session's queue. WebDAV folder sharing is not required. The guest
+agent must be running and file transfers must be permitted by guest policy.
+The guest agent chooses the destination folder and handles filename collisions;
+the viewer cannot select a remote directory.
+
+**Files → File Transfers…** opens the shared progress window for all monitors of
+that session. It shows byte counts, completion and errors, with Cancel Selected,
+Cancel All and Clear Finished controls. Closing it leaves transfers running.
+Closing the primary console cancels them. Agent or connection loss cancels pending
+work; reconnect never automatically resends it. Native cancellation is asynchronous,
+and partial-file cleanup is controlled by the guest agent.
+
+Only readable local regular files are supported, including empty files and file
+symlinks resolving to regular files. Folders and remote URLs are unsupported.
+This feature sends host files to the guest; it does not add clipboard file copying,
+guest-to-host sending, resume, or automatic retry. File bytes are streamed by
+`spice-client-glib-2.0`; no GTK dependency or periodic diagnostics are added.

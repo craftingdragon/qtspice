@@ -8,6 +8,7 @@
 #include "audiomenu.h"
 #include "sharedfolder.h"
 #include "usbdevices.h"
+#include "filesending.h"
 #include <QMainWindow>
 #include <QCloseEvent>
 #include <QFileDialog>
@@ -21,6 +22,7 @@ public:
         : QObject(primary), primary_(primary), session_(session) {
         primary->installEventFilter(this);
         UsbDevices::add(primary, session);
+        sending_ = new FileSending(primary, session); sending_->add(primary);
         addMenu(view);
         connect(session, &QtSpice::Session::monitorsChanged, this, [this] { refresh(); });
         connect(session, &QtSpice::Session::monitorConfigurationAvailableChanged, this, [this] { refreshMenus(); });
@@ -34,6 +36,7 @@ public:
     }
     ~MonitorWindows() override { closing_ = true; for (auto window : windows_) if (window) delete window; }
 private:
+    FileSending *sending_;
     QMainWindow *primary_;
     QtSpice::Session *session_;
     QMap<QtSpice::MonitorId, QPointer<QMainWindow>> windows_;
@@ -91,6 +94,7 @@ private:
         widget->setMonitor(id); widget->setSession(session_); window->setCentralWidget(widget);
         UsbDevices::add(window, session_);
         AudioMenu::add(window->menuBar(), session_); SharedFolder::addMenu(window->menuBar(), session_);
+        sending_->add(window);
         auto *view = window->menuBar()->addMenu(QStringLiteral("View"));
         addScalingMenu(view, widget); new Fullscreen(window, view, widget);
         auto *snapshot = view->addAction(QStringLiteral("Save Next Frame…"));

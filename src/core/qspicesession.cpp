@@ -43,7 +43,7 @@ void Session::connectUsbDevice(quint64 id) { if (state_ == State::Connected) wor
 void Session::disconnectUsbDevice(quint64 id) { worker_->usb.request(id, false); }
 void Session::cancelUsbConnection() { worker_->usb.cancel(); }
 
-Session::Worker::Worker(Session *o) : diagnostics("display", o), audio(o), usb(o), owner(o) {
+Session::Worker::Worker(Session *o) : diagnostics("display", o), audio(o), usb(o), transfers(o), owner(o) {
     clipboard.grab = [this](QList<quint32> types) { if (main) spice_main_channel_clipboard_selection_grab(main, 0, types.data(), types.size()); };
     clipboard.release = [this] { if (main) spice_main_channel_clipboard_selection_release(main, 0); };
     clipboard.request = [this](unsigned type) { if (main) spice_main_channel_clipboard_selection_request(main, 0, type); };
@@ -81,6 +81,7 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
     if (type == SPICE_CHANNEL_PLAYBACK) self->audio.attach(SPICE_PLAYBACK_CHANNEL(channel));
     if (type == SPICE_CHANNEL_MAIN) {
         self->main = SPICE_MAIN_CHANNEL(channel);
+        self->transfers.attach(self->main);
         g_object_set(channel, "max-clipboard", int(clipboardImageLimit), nullptr);
         g_signal_connect(channel, "main-mouse-update", G_CALLBACK(onMouseUpdate), self);
         g_signal_connect(channel, "main-agent-update", G_CALLBACK(onAgentUpdate), self);
@@ -149,6 +150,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     }
     if (channel == SPICE_CHANNEL(self->cursor)) self->cursor = nullptr;
     if (channel == SPICE_CHANNEL(self->main)) {
+        self->transfers.detach();
         self->main = nullptr;
         self->mainOpened = false;
         self->sentDisplaySize = {};
@@ -291,6 +293,9 @@ void Session::Worker::onAgentUpdate(SpiceMainChannel *channel, gpointer data) {
     auto *self = static_cast<Worker *>(data);
     gboolean connected = FALSE;
     g_object_get(channel, "agent-connected", &connected, nullptr);
+    gint caps = 0; g_object_get(channel, "agent-caps-0", &caps, nullptr);
+    const bool transferReady = self->mainOpened && connected && !(quint32(caps) & (1u << VD_AGENT_CAP_FILE_XFER_DISABLED));
+    self->transfers.availability(transferReady, transferReady ? QString() : !connected ? QStringLiteral("Guest agent unavailable") : QStringLiteral("Guest file transfer unavailable or disabled"));
     // agent-connected is announced before capabilities; clipboard grab requires
     // BY_DEMAND and would otherwise produce a GSpice critical warning.
     const bool ready = clipboardByDemandReady(connected,
@@ -377,6 +382,7 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
         QMetaObject::invokeMethod(self->owner, [owner = self->owner, generation = self->generation] { if (generation != owner->worker_->generation) return; owner->setState(State::Connected); }, Qt::QueuedConnection);
     } else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) {
         self->mainOpened = false;
+        self->transfers.availability(false, QStringLiteral("Main channel disconnected"));
         self->sentDisplaySize = {};
         self->inputsReady = false;
         self->keyboardReadiness = {};
@@ -454,6 +460,7 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
 void Session::Worker::disconnect() {
     ++generation;
     if (session) qCDebug(connectionLog) << owner << "local teardown requested";
+    transfers.detach();
     usb.detach();
     audio.detach();
     ++sharingGeneration;
@@ -853,4 +860,14 @@ QString Session::audioError() const { return worker_->audio.error; }
 void Session::setAudioEnabled(bool v) { worker_->audio.setEnabled(v); }
 void Session::setAudioMuted(bool v) { worker_->audio.muted = v; Q_EMIT audioChanged(); }
 void Session::setAudioVolume(double v) { worker_->audio.volume = std::isfinite(v) ? std::clamp(v, 0.0, 1.0) : 1.0; Q_EMIT audioChanged(); }
+}
+
+namespace QtSpice {
+bool Session::fileTransferReady() const { return state_ == State::Connected && worker_->transfers.ready; }
+QString Session::fileTransferReadinessReason() const { return state_ == State::Connected ? worker_->transfers.reason : QStringLiteral("Console disconnected"); }
+QList<FileTransferInfo> Session::fileTransfers() const { return worker_->transfers.rows; }
+bool Session::sendFiles(const QStringList &paths, QString *error) { if (!fileTransferReady()) { if (error) *error = fileTransferReadinessReason(); return false; } return worker_->transfers.send(paths, error); }
+void Session::cancelFileTransfer(quint64 id) { worker_->transfers.cancel(id); }
+void Session::cancelAllFileTransfers() { worker_->transfers.cancelAll(); }
+void Session::clearFinishedFileTransfers() { worker_->transfers.clearFinished(); }
 }

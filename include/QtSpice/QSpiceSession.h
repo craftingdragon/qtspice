@@ -9,6 +9,7 @@
 #include <compare>
 #include <QtSpice/QSpiceConnection.h>
 #include <memory>
+#include <QStringList>
 #include <optional>
 
 namespace QtSpice {
@@ -30,6 +31,15 @@ struct MonitorInfo {
 struct ClipboardContent {
     std::optional<QString> text;
     QImage image;
+};
+
+struct FileTransferInfo {
+    enum class State { Queued, Sending, Cancelling, Completed, Failed, Cancelled };
+    quint64 id = 0;
+    QString sourcePath, filename;
+    quint64 transferredBytes = 0, totalBytes = 0;
+    QString error;
+    State state = State::Queued;
 };
 
 struct UsbDeviceInfo {
@@ -71,6 +81,13 @@ public:
 
     explicit Session(QObject *parent = nullptr);
     ~Session() override;
+    bool fileTransferReady() const;
+    QString fileTransferReadinessReason() const;
+    QList<FileTransferInfo> fileTransfers() const;
+    bool sendFiles(const QStringList &paths, QString *error = nullptr);
+    void cancelFileTransfer(quint64 id);
+    void cancelAllFileTransfers();
+    void clearFinishedFileTransfers();
     QList<UsbDeviceInfo> usbDevices() const;
     int usbFreeChannels() const;
     QString usbError() const;
@@ -111,6 +128,8 @@ public:
 
 
 Q_SIGNALS:
+    void fileTransfersChanged();
+    void fileTransferReadinessChanged();
     void usbChanged();
     void audioChanged();
     void sharingChanged();
