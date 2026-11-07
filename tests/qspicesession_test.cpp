@@ -1,6 +1,8 @@
 #include <QtSpice/QSpiceSession.h>
 #include "../src/core/clipboardcapability.h"
 #include <QSignalSpy>
+#include "../examples/compressionmenu.h"
+#include <QTemporaryDir>
 #undef signals
 #include "../src/core/qspicesession.h"
 namespace QtSpice { struct SessionTestAccess { static auto &worker(Session &s) { return *s.worker_; } static void observed(Session &s, const QList<MonitorInfo> &layout, bool pending) { s.worker_->layoutPending = pending; s.worker_->observeMonitorLayout(layout); } static void actual(Session &s, const QList<MonitorInfo> &layout) { s.monitors_ = layout; } static bool pending(Session &s) { return s.worker_->layoutPending; } static auto &desired(Session &s) { return s.worker_->desiredMonitors; } }; }
@@ -19,6 +21,99 @@ void captureConnectionLog(QtMsgType, const QMessageLogContext &context, const QS
 class SessionTest : public QObject {
     Q_OBJECT
 private slots:
+    void compressionPreferences() {
+        using namespace QtSpice;
+        using Mode = Session::ImageCompression;
+        Session s; auto &w = SessionTestAccess::worker(s);
+        QCOMPARE(s.imageCompression(), Mode::ServerDefault);
+        QSignalSpy changes(&s, &Session::imageCompressionChanged);
+        s.setImageCompression(static_cast<Mode>(100));
+        s.setImageCompression(Mode::ServerDefault); QVERIFY(changes.isEmpty());
+        auto *native = spice_session_new();
+        auto cleanup = qScopeGuard([&] { w.compressionChannels.clear(); w.compressionOverrides.clear(); w.session = nullptr; g_object_unref(native); });
+        w.session = native;
+        auto *a = spice_channel_new(native, SPICE_CHANNEL_DISPLAY, 0);
+        auto *b = spice_channel_new(native, SPICE_CHANNEL_DISPLAY, 1);
+        auto *c = spice_channel_new(native, SPICE_CHANNEL_DISPLAY, 2);
+        QList<int> sent;
+        w.compressionSender = [&](SpiceChannel *channel, int value) { QVERIFY(channel == a || channel == c); sent.append(value); };
+        w.compressionOpened(a, true); w.compressionOpened(b, false);
+        s.setImageCompression(Mode::Automatic);
+        QCOMPARE(sent, QList<int>{SPICE_IMAGE_COMPRESSION_AUTO_GLZ});
+        int value = -1; g_object_get(native, "preferred-compression", &value, nullptr);
+        QCOMPARE(value, int(SPICE_IMAGE_COMPRESSION_AUTO_GLZ));
+        QVERIFY(s.imageCompressionStatus().contains("unsupported display channels"));
+        s.setImageCompression(Mode::Automatic); QCOMPARE(sent.size(), 1);
+        w.compressionOpened(c, true); // Native startup uses the latest session property.
+        QVERIFY(w.compressionOverrides.contains(c)); QCOMPARE(sent.size(), 1);
+        s.setImageCompression(Mode::ServerDefault); QCOMPARE(sent.size(), 1);
+        QVERIFY(s.imageCompressionStatus().contains("Reconnect"));
+        g_object_get(native, "preferred-compression", &value, nullptr);
+        QCOMPARE(value, int(SPICE_IMAGE_COMPRESSION_INVALID));
+        s.setImageCompression(Mode::Uncompressed); QCOMPARE(sent.size(), 3);
+        QVERIFY(!s.imageCompressionStatus().contains("Reconnect"));
+        QCOMPARE(sent.last(), int(SPICE_IMAGE_COMPRESSION_OFF));
+        w.compressionChannels.remove(a); w.compressionOverrides.remove(a);
+        w.compressionChannels.remove(c); w.compressionOverrides.remove(c);
+        QVERIFY(s.imageCompressionStatus().contains("unsupported;"));
+        w.session = nullptr; // Synthetic session is owned by this test.
+        w.disconnect(); QCOMPARE(s.imageCompression(), Mode::Uncompressed);
+        QCOMPARE(s.imageCompressionStatus(), QStringLiteral("Applies on connection"));
+        s.setImageCompression(Mode::ServerDefault);
+        QCOMPARE(s.imageCompressionStatus(), QStringLiteral("Server default"));
+    }
+    void compressionMenus() {
+        using namespace QtSpice;
+        using Mode = Session::ImageCompression;
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        QCoreApplication::setOrganizationName("QtSpiceCompressionTest");
+        QCoreApplication::setApplicationName("menus");
+        Session s, independent;
+        QSettings().setValue("connection/imageCompression", "invalid");
+        CompressionMenu::initialize(&s); QCOMPARE(s.imageCompression(), Mode::ServerDefault);
+        QMenuBar first, second;
+        CompressionMenu::add(&first, &s); CompressionMenu::add(&second, &s);
+        QCOMPARE(CompressionMenu::connectionMenu(&first), first.actions().first()->menu());
+        QCOMPARE(first.actions().size(), 1);
+        auto *menu = first.actions().first()->menu()->actions().first()->menu();
+        auto *other = second.actions().first()->menu()->actions().first()->menu();
+        auto *connection = first.actions().first()->menu();
+        connection->ensurePolished();
+        const auto item = connection->actionGeometry(connection->actions().first());
+        QVERIFY(connection->styleSheet().isEmpty());
+        auto *style = dynamic_cast<CompressionMenu::ConnectionMenuStyle *>(connection->style());
+        QVERIFY(style);
+        QStyleOptionMenuItem option;
+        option.initFrom(connection); option.menuItemType = QStyleOptionMenuItem::SubMenu;
+        option.text = QStringLiteral("Image Compression");
+        const QSize content(connection->fontMetrics().horizontalAdvance(option.text), connection->fontMetrics().height());
+        const auto nativeSize = style->baseStyle()->sizeFromContents(QStyle::CT_MenuItem, &option, content, connection);
+        const auto spacedSize = style->sizeFromContents(QStyle::CT_MenuItem, &option, content, connection);
+        QVERIFY(spacedSize.width() > nativeSize.width());
+        QCOMPARE(spacedSize.height(), nativeSize.height());
+        QVERIFY(item.width() >= spacedSize.width());
+        option.menuItemType = QStyleOptionMenuItem::Normal;
+        QCOMPARE(style->sizeFromContents(QStyle::CT_MenuItem, &option, content, connection),
+                 style->baseStyle()->sizeFromContents(QStyle::CT_MenuItem, &option, content, connection));
+        connection->resize(connection->sizeHint());
+        connection->setActiveAction(nullptr);
+        const auto inactive = connection->grab().toImage();
+        connection->setActiveAction(connection->actions().first());
+        QVERIFY(connection->grab().toImage() != inactive);
+        connection->setActiveAction(nullptr);
+        menu->actions()[1]->trigger();
+        QCOMPARE(s.imageCompression(), Mode::Automatic);
+        QVERIFY(other->actions()[1]->isChecked()); QVERIFY(!other->actions()[0]->isChecked());
+        QCOMPARE(independent.imageCompression(), Mode::ServerDefault);
+        QCOMPARE(QSettings().value("connection/imageCompression").toString(), QStringLiteral("automatic"));
+        CompressionMenu::initialize(&independent); QCOMPARE(independent.imageCompression(), Mode::Automatic);
+        other->actions()[2]->trigger(); QVERIFY(menu->actions()[2]->isChecked());
+        QCOMPARE(independent.imageCompression(), Mode::Automatic);
+        QCOMPARE(menu->actions().last()->text(), s.imageCompressionStatus());
+        QSettings().clear();
+    }
     void batchedDisplayAndStaleWork() {
         using namespace QtSpice;
         Session s;
@@ -236,5 +331,5 @@ private slots:
         }
     }
 };
-QTEST_GUILESS_MAIN(SessionTest)
+QTEST_MAIN(SessionTest)
 #include "qspicesession_test.moc"

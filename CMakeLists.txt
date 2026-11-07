@@ -8,7 +8,7 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Test Multimedia)
 find_package(Qt6 6.8 REQUIRED COMPONENTS WebEngineWidgets Network WebChannel)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(SPICE REQUIRED IMPORTED_TARGET spice-client-glib-2.0)
+pkg_check_modules(SPICE REQUIRED IMPORTED_TARGET spice-client-glib-2.0>=0.35)
 
 add_library(QtSpice src/core/qspicesession.cpp src/core/qspicesession.h src/core/qspicedisplay.cpp src/core/qspiceconnection.cpp include/QtSpice/QSpiceConnection.h include/QtSpice/QSpiceDisplay.h include/QtSpice/QSpiceSession.h src/widgets/qspicewidget.cpp src/widgets/clipboardbridge.cpp src/widgets/clipboardbridge.h include/QtSpice/QSpiceWidget.h)
 pkg_check_modules(RESAMPLE REQUIRED IMPORTED_TARGET libswresample>=4 libavutil>=57)

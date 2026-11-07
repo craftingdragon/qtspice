@@ -93,6 +93,7 @@ private:
         auto *widget = new QtSpice::Widget(window);
         widget->setMonitor(id); widget->setSession(session_); window->setCentralWidget(widget);
         UsbDevices::add(window, session_);
+        CompressionMenu::add(window->menuBar(), session_);
         AudioMenu::add(window->menuBar(), session_); SharedFolder::addMenu(window->menuBar(), session_);
         sending_->add(window);
         auto *view = window->menuBar()->addMenu(QStringLiteral("View"));

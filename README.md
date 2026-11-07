@@ -1,6 +1,6 @@
 # QtSpice
 
-Qt 6 SPICE client library based on `spice-client-glib-2.0`, without GTK widgets.
+Qt 6 SPICE client library based on `spice-client-glib-2.0` (0.35+), without GTK widgets.
 
 ## Build
 
@@ -302,3 +302,19 @@ control, push-to-talk, or echo cancellation in this version.
 Active capture has a separate status-bar label. In fullscreen, a small opaque
 Microphone active label appears at the bottom-right and passes input through to
 the console. It does not replace monitor-configuration or keyboard-capture status.
+
+## Image compression
+
+Both viewers and auxiliary monitor windows offer **Connection → Image Compression**.
+**Server Default** (the default) leaves compression to the server. **Automatic
+Compression** requests SPICE AUTO_GLZ lossless compression; **Uncompressed**
+requests compression OFF. Explicit choices apply live to capable display channels.
+Returning to Server Default after an override shows a manual reconnect notice;
+reconnect restores the server settings. Unsupported servers keep their settings.
+The informational row describes request status, not confirmation of the algorithm.
+
+Choices are remembered separately per viewer and retained on reconnect. All windows
+of one session share the choice; other already-open sessions are independent.
+Compression can increase server CPU use. These settings do not limit bandwidth or
+change video codecs, streaming detection, or JPEG settings, so video bandwidth may
+remain unchanged. No periodic diagnostics or network polling are added.

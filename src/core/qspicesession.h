@@ -29,6 +29,11 @@ struct QtSpice::Session::Worker {
     QMap<int, quint64> surfaceRevisions;
     quint64 nextDisplayTicket = 0;
     void clearDisplay(int id);
+    QMap<SpiceChannel *, bool> compressionChannels; // Open channel -> capability.
+    QSet<SpiceChannel *> compressionOverrides;
+    std::function<void(SpiceChannel *, int)> compressionSender = spice_display_channel_change_preferred_compression;
+    void compressionStatusChanged() { Q_EMIT owner->imageCompressionStatusChanged(owner->imageCompressionStatus()); }
+    void compressionOpened(SpiceChannel *channel, bool supported);
     QSet<int> fullRefresh;
     QRegion flushingDamage;
     std::function<bool(SpiceChannel *, SpiceDisplayPrimary *)> primaryReader = [](SpiceChannel *c, SpiceDisplayPrimary *p) { return spice_display_channel_get_primary(c, 0, p); };

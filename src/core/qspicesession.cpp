@@ -35,6 +35,48 @@ const char *channelEventName(SpiceChannelEvent event) {
 }
 
 namespace QtSpice {
+namespace {
+int nativeCompression(Session::ImageCompression mode) {
+    switch (mode) {
+    case Session::ImageCompression::Automatic: return SPICE_IMAGE_COMPRESSION_AUTO_GLZ;
+    case Session::ImageCompression::Uncompressed: return SPICE_IMAGE_COMPRESSION_OFF;
+    default: return SPICE_IMAGE_COMPRESSION_INVALID;
+    }
+}
+}
+void Session::setImageCompression(ImageCompression preference) {
+    if (preference != ImageCompression::ServerDefault && preference != ImageCompression::Automatic && preference != ImageCompression::Uncompressed) return;
+    if (imageCompression_ == preference) return;
+    imageCompression_ = preference;
+    if (worker_->session) g_object_set(worker_->session, "preferred-compression", nativeCompression(preference), nullptr);
+    if (preference != ImageCompression::ServerDefault) {
+        for (auto it = worker_->compressionChannels.cbegin(); it != worker_->compressionChannels.cend(); ++it) if (it.value()) {
+            worker_->compressionSender(it.key(), nativeCompression(preference));
+            worker_->compressionOverrides.insert(it.key());
+        }
+    }
+    qCDebug(displayLog) << "image compression preference" << int(preference);
+    Q_EMIT imageCompressionChanged(preference);
+    worker_->compressionStatusChanged();
+}
+QString Session::imageCompressionStatus() const {
+    if (imageCompression_ == ImageCompression::ServerDefault) return worker_->compressionOverrides.isEmpty()
+        ? QStringLiteral("Server default") : QStringLiteral("Reconnect to restore server defaults");
+    if (worker_->compressionChannels.isEmpty()) return QStringLiteral("Applies on connection");
+    int supported = 0;
+    for (bool value : worker_->compressionChannels) supported += value;
+    if (!supported) return QStringLiteral("Image compression preference unsupported; using server settings");
+    if (supported != worker_->compressionChannels.size()) return QStringLiteral("Preference requested; unsupported display channels keep server settings");
+    return QStringLiteral("Image compression preference requested");
+}
+void Session::Worker::compressionOpened(SpiceChannel *channel, bool supported) {
+    compressionChannels[channel] = supported;
+    // Native display initialization sends the session property on channel startup.
+    compressionOverrides.remove(channel);
+    if (supported && owner->imageCompression() != ImageCompression::ServerDefault) compressionOverrides.insert(channel);
+    compressionStatusChanged();
+}
+
 
 QList<UsbDeviceInfo> Session::usbDevices() const { return worker_->usb.devices(); }
 int Session::usbFreeChannels() const { return worker_->usb.freeChannels; }
@@ -139,6 +181,9 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
     qCDebug(connectionLog) << self->owner << "channel destroyed" << spice_channel_type_to_string(type) << "id" << id;
+    self->compressionChannels.remove(channel);
+    self->compressionOverrides.remove(channel);
+    self->compressionStatusChanged();
     self->audio.detach(channel);
     self->microphone.detach(channel);
     self->webdav.remove(channel);
@@ -417,6 +462,10 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
     }
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
+    if (type == SPICE_CHANNEL_DISPLAY) {
+        if (event == SPICE_CHANNEL_OPENED) self->compressionOpened(channel, spice_channel_test_capability(channel, SPICE_DISPLAY_CAP_PREF_COMPRESSION));
+        else { self->compressionChannels.remove(channel); self->compressionOverrides.remove(channel); self->compressionStatusChanged(); }
+    }
     const GError *channelError = spice_channel_get_error(channel);
     qCDebug(connectionLog) << self->owner << "channel event" << spice_channel_type_to_string(type)
         << "id" << id << channelEventName(event) << "code" << int(event)
@@ -492,6 +541,7 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
         proxyUrl = proxy->url();
     }
     session = spice_session_new();
+    g_object_set(session, "preferred-compression", nativeCompression(owner->imageCompression()), nullptr);
     usb.attach(session);
     owner->sharedDirectory_ = config.sharedDirectory;
     owner->sharingError_.clear();
@@ -533,6 +583,8 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
 }
 
 void Session::Worker::disconnect() {
+    compressionChannels.clear(); compressionOverrides.clear();
+    compressionStatusChanged();
     ++generation;
     if (session) qCDebug(connectionLog) << owner << "local teardown requested";
     transfers.detach();

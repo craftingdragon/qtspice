@@ -1,4 +1,5 @@
 #pragma once
+#include "compressionmenu.h"
 #include <QtSpice/QSpiceSession.h>
 #include <QMainWindow>
 #include <QEvent>
@@ -29,7 +30,7 @@ public:
     }
     Source source;
     void attach(QMainWindow *window) {
-        auto *menu = window->menuBar()->addMenu(QStringLiteral("Connection"));
+        auto *menu = CompressionMenu::connectionMenu(window->menuBar());
         auto *retry = menu->addAction(QStringLiteral("Reconnect"));
         auto *cancelAction = menu->addAction(QStringLiteral("Cancel Reconnect"));
         auto *panel = new QWidget(window->centralWidget()); panel->setObjectName(QStringLiteral("reconnectPanel"));

@@ -65,6 +65,12 @@ class Session final : public QObject {
 public:
     enum class State { Disconnected, Connecting, Connected };
     Q_ENUM(State)
+    enum class ImageCompression { ServerDefault, Automatic, Uncompressed };
+    Q_ENUM(ImageCompression)
+    ImageCompression imageCompression() const { return imageCompression_; }
+    void setImageCompression(ImageCompression preference);
+    // Request status only: the server does not confirm its selected algorithm.
+    QString imageCompressionStatus() const;
     enum class MouseMode { Client, Server };
     Q_ENUM(MouseMode)
 
@@ -146,6 +152,8 @@ public:
 
 
 Q_SIGNALS:
+    void imageCompressionChanged(QtSpice::Session::ImageCompression preference);
+    void imageCompressionStatusChanged(const QString &status);
     void fileTransfersChanged();
     void fileTransferReadinessChanged();
     void usbChanged();
@@ -174,6 +182,7 @@ Q_SIGNALS:
     void guestClipboardText(const QString &text);
 
 private:
+    ImageCompression imageCompression_ = ImageCompression::ServerDefault;
     QList<MonitorInfo> monitors_;
     QMap<MonitorId, QImage> frames_;
     QMap<int, MonitorCursor> cursors_;
