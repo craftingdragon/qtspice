@@ -24,17 +24,27 @@ inline bool clipboardImageSize(QSize size) {
     return size.width() > 0 && size.height() > 0 && qint64(size.width()) * size.height() <= clipboardPixelLimit;
 }
 inline QImage decodeClipboardImage(QByteArray bytes, QByteArray format) {
-    if (bytes.size() > clipboardImageLimit || format.isEmpty()) return {};
+    if (bytes.isEmpty() || format.isEmpty()) return {};
+    if (bytes.size() > clipboardImageLimit) {
+        qCWarning(clipboardLog()) << "Rejected encoded clipboard image size" << bytes.size(); return {};
+    }
     QBuffer buffer(&bytes); buffer.open(QIODevice::ReadOnly);
     QImageReader reader(&buffer, format);
     reader.setAutoDetectImageFormat(false);
-    if (!clipboardImageSize(reader.size())) { qCWarning(clipboardLog()) << "Rejected clipboard image dimensions or header"; return {}; }
+    const QSize dimensions = reader.size();
+    if (!dimensions.isValid() || dimensions.isEmpty()) {
+        qCDebug(clipboardLog()) << "Unreadable clipboard image header" << format << "bytes" << bytes.size() << "decoder error" << reader.errorString();
+        return {};
+    }
+    if (!clipboardImageSize(dimensions)) {
+        qCWarning(clipboardLog()) << "Rejected clipboard image dimensions" << dimensions; return {};
+    }
     const auto depth = QImage::toPixelFormat(reader.imageFormat()).bitsPerPixel();
     if (depth && qint64(reader.size().width()) * reader.size().height() > (256LL * 1024 * 1024 * 8) / depth) {
         qCWarning(clipboardLog()) << "Rejected decoded clipboard image size"; return {};
     }
     QImage image = reader.read();
-    if (image.isNull()) qCWarning(clipboardLog()) << "Clipboard image decoding failed";
+    if (image.isNull()) qCDebug(clipboardLog()) << "Clipboard image representation decoding failed" << format << "bytes" << bytes.size() << "decoder error" << reader.errorString();
     if (!clipboardImageSize(image.size()) || image.sizeInBytes() > 256LL * 1024 * 1024) return {};
     return image;
 }

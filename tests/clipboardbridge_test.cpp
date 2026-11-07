@@ -25,6 +25,7 @@ private slots:
             QCOMPARE(decoded.size(), image.size());
             if (type != 5) QCOMPARE(decoded.convertToFormat(QImage::Format_RGB32), image.convertToFormat(QImage::Format_RGB32));
         }
+        QVERIFY(QtSpice::decodeClipboardImage({}, "png").isNull());
         QVERIFY(QtSpice::decodeClipboardImage("broken", "png").isNull());
         QVERIFY(!QtSpice::clipboardImageSize(QSize(INT_MAX, INT_MAX)));
         QVERIFY(QtSpice::clipboardImageSize(QSize(8192,8192)));

@@ -29,7 +29,7 @@ void ClipboardBridge::readHost() {
                 const auto codecs = QImageReader::imageFormatsForMimeType(format.toLatin1());
                 if (codecs.isEmpty()) continue;
                 auto bytes = mime->data(format);
-                if (bytes.size() <= clipboardImageLimit) encoded.append({bytes, codecs.first()});
+                if (!bytes.isEmpty() && bytes.size() <= clipboardImageLimit) encoded.append({bytes, codecs.first()});
                 if (encoded.size() == 4) break;
             }
             if (!encoded.isEmpty()) {
