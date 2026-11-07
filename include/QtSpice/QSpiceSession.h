@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QByteArray>
 #include <QString>
 #include <QImage>
 #include <QSize>
@@ -33,6 +34,11 @@ struct ClipboardContent {
     QImage image;
 };
 
+struct AudioInputDeviceInfo {
+    QByteArray id;
+    QString description;
+};
+
 struct FileTransferInfo {
     enum class State { Queued, Sending, Cancelling, Completed, Failed, Cancelled };
     quint64 id = 0;
@@ -61,6 +67,17 @@ public:
     enum class MouseMode { Client, Server };
     Q_ENUM(MouseMode)
 
+    enum class MicrophoneState { Disabled, WaitingForChannel, WaitingForStream, Recording, Error };
+    Q_ENUM(MicrophoneState)
+    // Enable only while connected. Disconnect resets consent; selection survives.
+    bool microphoneEnabled() const;
+    void setMicrophoneEnabled(bool);
+    // Empty device ID follows the host default microphone.
+    QByteArray microphoneDevice() const;
+    void setMicrophoneDevice(const QByteArray &);
+    QList<AudioInputDeviceInfo> audioInputDevices() const;
+    MicrophoneState microphoneState() const;
+    QString microphoneError() const;
     enum class AudioState { Disabled, WaitingForStream, Playing, Error };
     Q_ENUM(AudioState)
     bool audioEnabled() const;
@@ -132,6 +149,7 @@ Q_SIGNALS:
     void fileTransferReadinessChanged();
     void usbChanged();
     void audioChanged();
+    void microphoneChanged();
     void sharingChanged();
     void stateChanged(QtSpice::Session::State state);
     void errorOccurred(const QString &message);

@@ -26,6 +26,7 @@ struct QtSpice::Session::Worker {
     IntervalStats diagnostics;
     quint64 pendingFrames = 0;
     AudioPlayback audio;
+    AudioRecording microphone;
     UsbController usb;
     FileTransferController transfers;
     std::unique_ptr<QtSpice::TunnelProxy> proxy;

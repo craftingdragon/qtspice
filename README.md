@@ -4,7 +4,7 @@ Qt 6 SPICE client library based on `spice-client-glib-2.0`, without GTK widgets.
 
 ## Build
 
-Requires a C++20 compiler, CMake 3.24+, Qt 6 Core, Gui, Widgets, Test, Multimedia, WebEngineWidgets, WebChannel and Network, pkg-config, and `spice-client-glib-2.0` development files. Native Wayland relative pointer capture is built when Qt 6.5+, Qt GuiPrivate headers, `wayland-client`, `wayland-protocols`, and `wayland-scanner` are available.
+Requires a C++20 compiler, CMake 3.24+, Qt 6 Core, Gui, Widgets, Test, Multimedia, WebEngineWidgets, WebChannel and Network, pkg-config, `spice-client-glib-2.0`, and FFmpeg `libswresample` (4+) / `libavutil` (57+) development files. Native Wayland relative pointer capture is built when Qt 6.5+, Qt GuiPrivate headers, `wayland-client`, `wayland-protocols`, and `wayland-scanner` are available.
 
 ```sh
 cmake -S . -B build
@@ -274,3 +274,29 @@ symlinks resolving to regular files. Folders and remote URLs are unsupported.
 This feature sends host files to the guest; it does not add clipboard file copying,
 guest-to-host sending, resume, or automatic retry. File bytes are streamed by
 `spice-client-glib-2.0`; no GTK dependency or periodic diagnostics are added.
+
+## Microphone forwarding
+
+Both viewers provide **Audio → Enable Microphone** and **Audio → Input Device**.
+Forwarding starts disabled and is independent of playback mute and volume. Enable
+it while connected, then start recording in the guest. The microphone is opened
+only while the guest requests a recording stream. Guest recording mute and volume
+are honored. No guest agent is required; the VM needs a SPICE-backed audio input.
+
+Choose System default to follow the host default input, or pin a specific device.
+Device selection is remembered by each viewer and shared between its monitor
+windows. A missing pinned device produces an error instead of silently selecting
+a different microphone. Reselect a device or toggle forwarding to retry an error.
+Disconnects and recording-channel failures disable forwarding; reconnect never
+re-enables it automatically. Required host permissions are requested on enable.
+
+Qt Multimedia captures the selected device’s preferred PCM format and channel
+layout, preserving microphone arrays whose useful inputs are outside the front
+stereo pair; libswresample converts sample
+formats, sample rates, and channel layouts into the guest's signed 16-bit PCM
+stream. Captured audio is streamed, not saved locally. There is no local gain
+control, push-to-talk, or echo cancellation in this version.
+
+Active capture has a separate status-bar label. In fullscreen, a small opaque
+Microphone active label appears at the bottom-right and passes input through to
+the console. It does not replace monitor-configuration or keyboard-capture status.

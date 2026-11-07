@@ -1,4 +1,5 @@
 #pragma once
+#include "microphonemenu.h"
 #include <QMenuBar>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -61,5 +62,6 @@ inline void add(QMenuBar *bar, QtSpice::Session *session) {
         QSettings().setValue("audio/volume", v / 100.0);
     });
     sync();
+    addMicrophoneMenu(menu, session);
 }
 } // namespace AudioMenu

@@ -43,7 +43,7 @@ void Session::connectUsbDevice(quint64 id) { if (state_ == State::Connected) wor
 void Session::disconnectUsbDevice(quint64 id) { worker_->usb.request(id, false); }
 void Session::cancelUsbConnection() { worker_->usb.cancel(); }
 
-Session::Worker::Worker(Session *o) : diagnostics("display", o), audio(o), usb(o), transfers(o), owner(o) {
+Session::Worker::Worker(Session *o) : diagnostics("display", o), audio(o), microphone(o), usb(o), transfers(o), owner(o) {
     clipboard.grab = [this](QList<quint32> types) { if (main) spice_main_channel_clipboard_selection_grab(main, 0, types.data(), types.size()); };
     clipboard.release = [this] { if (main) spice_main_channel_clipboard_selection_release(main, 0); };
     clipboard.request = [this](unsigned type) { if (main) spice_main_channel_clipboard_selection_request(main, 0, type); };
@@ -78,6 +78,7 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
         if (self->owner->sharedDirectory_ && self->owner->sharingError_.isEmpty()) spice_channel_connect(channel);
         self->owner->updateSharingState();
     }
+    if (type == SPICE_CHANNEL_RECORD) self->microphone.attach(SPICE_RECORD_CHANNEL(channel));
     if (type == SPICE_CHANNEL_PLAYBACK) self->audio.attach(SPICE_PLAYBACK_CHANNEL(channel));
     if (type == SPICE_CHANNEL_MAIN) {
         self->main = SPICE_MAIN_CHANNEL(channel);
@@ -135,6 +136,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
     qCDebug(connectionLog) << self->owner << "channel destroyed" << spice_channel_type_to_string(type) << "id" << id;
     self->audio.detach(channel);
+    self->microphone.detach(channel);
     self->webdav.remove(channel);
     self->webdavOpened.remove(channel);
     self->owner->updateSharingState();
@@ -152,6 +154,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     if (channel == SPICE_CHANNEL(self->main)) {
         self->transfers.detach();
         self->main = nullptr;
+        self->microphone.detach();
         self->mainOpened = false;
         self->sentDisplaySize = {};
         self->clipboardReady = false;
@@ -374,6 +377,7 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
         }
         self->owner->updateSharingState();
     }
+    if (SPICE_IS_RECORD_CHANNEL(channel) && (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT)) self->microphone.detach(channel);
     if (type != SPICE_CHANNEL_MAIN) return;
     if (event == SPICE_CHANNEL_OPENED) {
         self->mainOpened = true;
@@ -381,6 +385,7 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
         onAgentUpdate(SPICE_MAIN_CHANNEL(channel), self);
         QMetaObject::invokeMethod(self->owner, [owner = self->owner, generation = self->generation] { if (generation != owner->worker_->generation) return; owner->setState(State::Connected); }, Qt::QueuedConnection);
     } else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) {
+        self->microphone.detach();
         self->mainOpened = false;
         self->transfers.availability(false, QStringLiteral("Main channel disconnected"));
         self->sentDisplaySize = {};
@@ -463,6 +468,7 @@ void Session::Worker::disconnect() {
     transfers.detach();
     usb.detach();
     audio.detach();
+    microphone.detach();
     ++sharingGeneration;
     webdav.clear();
     webdavOpened.clear();
@@ -870,4 +876,14 @@ bool Session::sendFiles(const QStringList &paths, QString *error) { if (!fileTra
 void Session::cancelFileTransfer(quint64 id) { worker_->transfers.cancel(id); }
 void Session::cancelAllFileTransfers() { worker_->transfers.cancelAll(); }
 void Session::clearFinishedFileTransfers() { worker_->transfers.clearFinished(); }
+}
+
+namespace QtSpice {
+bool Session::microphoneEnabled() const { return worker_->microphone.enabled; }
+void Session::setMicrophoneEnabled(bool v) { worker_->microphone.setEnabled(v && state() == State::Connected); }
+QByteArray Session::microphoneDevice() const { return worker_->microphone.deviceId; }
+void Session::setMicrophoneDevice(const QByteArray &id) { worker_->microphone.select(id); }
+QList<AudioInputDeviceInfo> Session::audioInputDevices() const { QList<AudioInputDeviceInfo> r; for (auto d : QMediaDevices::audioInputs()) r.append({d.id(), d.description()}); return r; }
+Session::MicrophoneState Session::microphoneState() const { return worker_->microphone.state; }
+QString Session::microphoneError() const { return worker_->microphone.error; }
 }
