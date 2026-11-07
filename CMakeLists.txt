@@ -12,6 +12,7 @@ pkg_check_modules(SPICE REQUIRED IMPORTED_TARGET spice-client-glib-2.0)
 
 add_library(QtSpice src/core/qspicesession.cpp src/core/qspicesession.h src/core/qspicedisplay.cpp src/core/qspiceconnection.cpp include/QtSpice/QSpiceConnection.h include/QtSpice/QSpiceDisplay.h include/QtSpice/QSpiceSession.h src/widgets/qspicewidget.cpp src/widgets/clipboardbridge.cpp src/widgets/clipboardbridge.h include/QtSpice/QSpiceWidget.h)
 add_library(QtSpice::QtSpice ALIAS QtSpice)
+target_sources(QtSpice PRIVATE src/core/qspiceusb.cpp src/core/qspiceusb.h)
 target_sources(QtSpice PRIVATE src/core/qspiceaudio.cpp src/core/qspiceaudio.h)
 target_sources(QtSpice PRIVATE src/core/proxyconnection.cpp src/core/proxyconnection.h)
 target_sources(QtSpice PRIVATE src/core/tunnelproxy.cpp src/core/tunnelproxy.h)
@@ -85,6 +86,10 @@ target_link_libraries(proxmox-viewer PRIVATE QtSpice Qt6::WebEngineWidgets Qt6::
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(usb_test tests/usb_test.cpp)
+  target_compile_definitions(usb_test PRIVATE QT_NO_KEYWORDS)
+  target_link_libraries(usb_test PRIVATE QtSpice Qt6::Test Qt6::Network Qt6::Multimedia PkgConfig::SPICE)
+  add_test(NAME usb_test COMMAND usb_test)
   add_executable(ticketbridge_test tests/ticketbridge_test.cpp examples/proxmox-viewer/ticketbridge.h)
   target_link_libraries(ticketbridge_test PRIVATE QtSpice Qt6::Test Qt6::WebEngineWidgets Qt6::WebChannel)
   add_test(NAME ticketbridge_test COMMAND ticketbridge_test)

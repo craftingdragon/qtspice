@@ -7,6 +7,7 @@
 #include "scalingmenu.h"
 #include "audiomenu.h"
 #include "sharedfolder.h"
+#include "usbdevices.h"
 #include <QMainWindow>
 #include <QCloseEvent>
 #include <QFileDialog>
@@ -19,6 +20,7 @@ public:
     MonitorWindows(QMainWindow *primary, QtSpice::Session *session, QMenu *view)
         : QObject(primary), primary_(primary), session_(session) {
         primary->installEventFilter(this);
+        UsbDevices::add(primary, session);
         addMenu(view);
         connect(session, &QtSpice::Session::monitorsChanged, this, [this] { refresh(); });
         connect(session, &QtSpice::Session::monitorConfigurationAvailableChanged, this, [this] { refreshMenus(); });
@@ -45,6 +47,7 @@ private:
         if (event->type() == QEvent::Close && !closing_) {
             if (object == primary_) {
                 closing_ = true;
+                if (auto *dialog = qobject_cast<QDialog *>(session_->property("usbDialog").value<QObject *>())) dialog->close();
                 for (auto window : windows_) if (window) window->hide();
                 session_->disconnectFromHost();
             } else {
@@ -86,6 +89,7 @@ private:
         window->setWindowTitle(QStringLiteral("QtSpice · Monitor %1:%2").arg(id.channelId).arg(id.monitorId));
         auto *widget = new QtSpice::Widget(window);
         widget->setMonitor(id); widget->setSession(session_); window->setCentralWidget(widget);
+        UsbDevices::add(window, session_);
         AudioMenu::add(window->menuBar(), session_); SharedFolder::addMenu(window->menuBar(), session_);
         auto *view = window->menuBar()->addMenu(QStringLiteral("View"));
         addScalingMenu(view, widget); new Fullscreen(window, view, widget);

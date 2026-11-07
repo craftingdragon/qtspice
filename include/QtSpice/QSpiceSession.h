@@ -32,6 +32,17 @@ struct ClipboardContent {
     QImage image;
 };
 
+struct UsbDeviceInfo {
+    enum class State { Available, Connecting, Connected, Disconnecting };
+    quint64 id = 0;
+    QString description;
+    bool inputDevice = false;
+    State state = State::Available;
+    bool canRedirect = false;
+    QString reason;
+    bool operator==(const UsbDeviceInfo &) const = default;
+};
+
 class Session final : public QObject {
     Q_OBJECT
 public:
@@ -60,6 +71,12 @@ public:
 
     explicit Session(QObject *parent = nullptr);
     ~Session() override;
+    QList<UsbDeviceInfo> usbDevices() const;
+    int usbFreeChannels() const;
+    QString usbError() const;
+    void connectUsbDevice(quint64 id);
+    void disconnectUsbDevice(quint64 id);
+    void cancelUsbConnection();
     State state() const noexcept;
     MouseMode mouseMode() const noexcept;
     bool inputReady() const noexcept;
@@ -94,6 +111,7 @@ public:
 
 
 Q_SIGNALS:
+    void usbChanged();
     void audioChanged();
     void sharingChanged();
     void stateChanged(QtSpice::Session::State state);

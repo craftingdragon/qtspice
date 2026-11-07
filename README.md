@@ -224,3 +224,31 @@ Direct connections reuse their endpoint. For a local `.vv`, Reconnect rereads th
 For QEMU consoles opened through the Proxmox browser, reconnect requests fresh credentials for the same VM through the browser's existing login. Keep the browser open on the original Proxmox server. If login expired, log in there and click Reconnect again. Unsupported pages and legacy downloaded consoles cannot refresh credentials this way. VM migration to another node requires reopening its console from Proxmox. Qt WebChannel is required for the Proxmox viewer.
 
 Console windows retain geometry, fullscreen and input/scaling preferences during recovery. Previously requested monitor settings are restored for heads advertised by the reconnected guest; this still requires working guest-agent support. Closing an extra monitor while disconnected disables its restoration. Pending snapshots and held input are cleared; click the console to resume capture. Connection data and topology are not persisted by reconnect support.
+
+### USB redirection
+
+Both viewers provide **Devices → USB Devices…**, including in monitor windows
+and the fullscreen edge menu. Select a device and choose Connect to transfer it
+to the guest, or Disconnect to return it to the host. Redirected devices are
+unavailable to host applications. Closing the dialog leaves redirection active.
+Input devices are hidden by default; enable **Show input devices** to select
+them. Already redirected input devices remain visible so they can be released.
+
+The VM needs SPICE USB redirection channels, for example:
+
+```xml
+<redirdev bus="usb" type="spicevmc"/>
+<redirdev bus="usb" type="spicevmc"/>
+```
+
+Each redirected device consumes a channel. The guest needs a USB controller and
+its normal drivers for that device. The client requires a build of
+`spice-client-glib-2.0` with USB redirection support, plus the distribution's USB
+access/ACL helper and permission policy where required. Permission errors appear
+in the device dialog; configure the distribution's device permissions rather
+than running the viewer as root. No GTK widget library is used.
+
+USB selection is manual: hotplugging and reconnecting never automatically attach
+devices. Disconnecting the console releases devices. No selections are saved,
+and device updates use native events rather than periodic polling. Linux is the
+initial validation platform.

@@ -36,7 +36,14 @@ const char *channelEventName(SpiceChannelEvent event) {
 
 namespace QtSpice {
 
-Session::Worker::Worker(Session *o) : diagnostics("display", o), audio(o), owner(o) {
+QList<UsbDeviceInfo> Session::usbDevices() const { return worker_->usb.devices(); }
+int Session::usbFreeChannels() const { return worker_->usb.freeChannels; }
+QString Session::usbError() const { return worker_->usb.error; }
+void Session::connectUsbDevice(quint64 id) { if (state_ == State::Connected) worker_->usb.request(id, true); }
+void Session::disconnectUsbDevice(quint64 id) { worker_->usb.request(id, false); }
+void Session::cancelUsbConnection() { worker_->usb.cancel(); }
+
+Session::Worker::Worker(Session *o) : diagnostics("display", o), audio(o), usb(o), owner(o) {
     clipboard.grab = [this](QList<quint32> types) { if (main) spice_main_channel_clipboard_selection_grab(main, 0, types.data(), types.size()); };
     clipboard.release = [this] { if (main) spice_main_channel_clipboard_selection_release(main, 0); };
     clipboard.request = [this](unsigned type) { if (main) spice_main_channel_clipboard_selection_request(main, 0, type); };
@@ -118,7 +125,7 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
         (type == SPICE_CHANNEL_CURSOR)) {
         spice_channel_connect(channel);
     }
-    QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id, generation = self->generation] { if (generation != owner->worker_->generation) return; Q_EMIT owner->channelAdded(type, id); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id, generation = self->generation] { if (generation != owner->worker_->generation) return; if (type == SPICE_CHANNEL_USBREDIR) owner->worker_->usb.refreshChannels(); Q_EMIT owner->channelAdded(type, id); }, Qt::QueuedConnection);
 }
 
 void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gpointer data) {
@@ -150,7 +157,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
         QMetaObject::invokeMethod(self->owner, [owner = self->owner, generation = self->generation] { if (generation != owner->worker_->generation) return; owner->setClipboardReady(false); }, Qt::QueuedConnection);
     }
     g_signal_handlers_disconnect_by_data(channel, self);
-    QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id, generation = self->generation] { if (generation != owner->worker_->generation) return; Q_EMIT owner->channelRemoved(type, id); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(self->owner, [owner = self->owner, type, id, generation = self->generation] { if (generation != owner->worker_->generation) return; if (type == SPICE_CHANNEL_USBREDIR) owner->worker_->usb.refreshChannels(); Q_EMIT owner->channelRemoved(type, id); }, Qt::QueuedConnection);
 }
 
 void Session::Worker::refreshMonitors() {
@@ -323,6 +330,13 @@ gboolean Session::Worker::onClipboardRequest(SpiceMainChannel *channel, guint se
 
 void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent event, gpointer data) {
     auto *self = static_cast<Worker *>(data);
+    if (SPICE_IS_USBREDIR_CHANNEL(channel)) {
+        // The manager processes channel events after our handler. Refresh only
+        // after all native handlers have updated its channel inventory.
+        QMetaObject::invokeMethod(self->owner, [owner = self->owner, generation = self->generation] {
+            if (generation == owner->worker_->generation) owner->worker_->usb.refreshChannels();
+        }, Qt::QueuedConnection);
+    }
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
     const GError *channelError = spice_channel_get_error(channel);
@@ -397,6 +411,7 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
         proxyUrl = proxy->url();
     }
     session = spice_session_new();
+    usb.attach(session);
     owner->sharedDirectory_ = config.sharedDirectory;
     owner->sharingError_.clear();
     applySharing();
@@ -439,6 +454,7 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
 void Session::Worker::disconnect() {
     ++generation;
     if (session) qCDebug(connectionLog) << owner << "local teardown requested";
+    usb.detach();
     audio.detach();
     ++sharingGeneration;
     webdav.clear();
