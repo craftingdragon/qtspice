@@ -44,6 +44,7 @@ void Session::disconnectUsbDevice(quint64 id) { worker_->usb.request(id, false);
 void Session::cancelUsbConnection() { worker_->usb.cancel(); }
 
 Session::Worker::Worker(Session *o) : diagnostics("display", o), audio(o), microphone(o), usb(o), transfers(o), owner(o) {
+    diagnostics.updateGauges = [this] { diagnostics.gauge(QStringLiteral("pending-flushes"), displayDamage.size()); };
     clipboard.grab = [this](QList<quint32> types) { if (main) spice_main_channel_clipboard_selection_grab(main, 0, types.data(), types.size()); };
     clipboard.release = [this] { if (main) spice_main_channel_clipboard_selection_release(main, 0); };
     clipboard.request = [this](unsigned type) { if (main) spice_main_channel_clipboard_selection_request(main, 0, type); };
@@ -104,7 +105,10 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
         g_signal_connect(channel, "display-primary-create", G_CALLBACK(+[](SpiceChannel *c, gint, gint, gint, gint, gint, gpointer, gpointer d) {
             Worker::onDisplayChanged(c, d);
         }), self);
-        g_signal_connect(channel, "display-primary-destroy", G_CALLBACK(onDisplayChanged), self);
+        g_signal_connect(channel, "display-primary-destroy", G_CALLBACK(+[](SpiceChannel *c, gpointer d) {
+            int id = 0; g_object_get(c, "channel-id", &id, nullptr);
+            static_cast<Worker *>(d)->clearDisplay(id);
+        }), self);
         g_signal_connect(channel, "display-invalidate", G_CALLBACK(onInvalidate), self);
     } else if (type == SPICE_CHANNEL_INPUTS) {
         self->inputs = SPICE_INPUTS_CHANNEL(channel);
@@ -140,7 +144,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     self->webdav.remove(channel);
     self->webdavOpened.remove(channel);
     self->owner->updateSharingState();
-    if (type == SPICE_CHANNEL_DISPLAY) { self->displays.remove(id); self->refreshMonitors(); }
+    if (type == SPICE_CHANNEL_DISPLAY) { self->clearDisplay(id); self->displays.remove(id); self->refreshMonitors(); }
     if (channel == SPICE_CHANNEL(self->display)) self->display = nullptr;
     if (channel == SPICE_CHANNEL(self->inputs)) {
         self->inputs = nullptr;
@@ -200,7 +204,7 @@ void Session::Worker::refreshMonitors() {
     for (auto it = owner->frames_.begin(); it != owner->frames_.end();) {
         bool enabled = false;
         for (const auto &m : result) if (m.id == it.key() && m.enabled) enabled = true;
-        if (!enabled) { auto id = it.key(); it = owner->frames_.erase(it); Q_EMIT owner->monitorFrameReady(id, {}); if (id == MonitorId{}) Q_EMIT owner->frameReady({}); }
+        if (!enabled) { auto id = it.key(); it = owner->frames_.erase(it); Q_EMIT owner->monitorFrameUpdated(id, {}); Q_EMIT owner->monitorFrameReady(id, {}); if (id == MonitorId{}) Q_EMIT owner->frameReady({}); }
         else ++it;
     }
     Q_EMIT owner->monitorsChanged();
@@ -229,37 +233,103 @@ void Session::Worker::onDisplayChanged(SpiceChannel *channel, gpointer data) {
     int channelId = 0; g_object_get(channel, "channel-id", &channelId, nullptr);
     if (self->displays.value(channelId) != SPICE_DISPLAY_CHANNEL(channel)) return;
     self->refreshMonitors();
-    self->renderMonitors(channel);
+    self->scheduleDisplay(channel);
+}
+void Session::Worker::clearDisplay(int id) {
+    ++surfaceRevisions[id];
+    displayTickets.remove(id); displayDamage.remove(id); fullRefresh.remove(id);
+    const auto keys = owner->frames_.keys();
+    for (auto key : keys) if (key.channelId == id) {
+        owner->frames_.remove(key);
+        Q_EMIT owner->monitorFrameUpdated(key, {});
+        Q_EMIT owner->monitorFrameReady(key, {});
+        if (key == MonitorId{}) Q_EMIT owner->frameReady({});
+    }
+}
+void Session::Worker::scheduleDisplay(SpiceChannel *channel, QRect damage) {
+    int id = 0; g_object_get(channel, "channel-id", &id, nullptr);
+    const bool pending = displayDamage.contains(id);
+    if (damage.isEmpty()) fullRefresh.insert(id);
+    else displayDamage[id] += damage;
+    if (displayDamage[id].rectCount() > 64) displayDamage[id] = displayDamage[id].boundingRect();
+    if (pending) return;
+    const auto ticket = ++nextDisplayTicket;
+    displayTickets[id] = ticket;
+    const auto revision = displayRevision;
+    const auto connection = generation;
+    QMetaObject::invokeMethod(owner, [this, id, revision, connection, ticket] {
+        if (revision != displayRevision || connection != generation || displayTickets.value(id) != ticket) return;
+        displayTickets.remove(id);
+        auto damage = displayDamage.take(id);
+        const bool full = fullRefresh.remove(id);
+        auto *channel = displays.value(id);
+        if (!channel) return;
+        diagnostics.add(QStringLiteral("flushes"));
+        // renderMonitors consumes the union rather than its bounding rectangle.
+        flushingDamage = full ? QRegion{} : damage;
+        renderMonitors(SPICE_CHANNEL(channel), full ? QRect{} : damage.boundingRect());
+    }, Qt::QueuedConnection);
 }
 void Session::Worker::renderMonitors(SpiceChannel *channel, QRect invalidated) {
     auto *self = this;
+    const QRegion currentDamage = flushingDamage;
     int channelId = 0; g_object_get(channel, "channel-id", &channelId, nullptr);
+    const auto surfaceRevision = surfaceRevisions.value(channelId);
     SpiceDisplayPrimary primary{};
-    if (!spice_display_channel_get_primary(channel, 0, &primary)) {
+    if (!primaryReader(channel, &primary)) {
         for (auto it = owner->frames_.begin(); it != owner->frames_.end();) {
             if (it.key().channelId != channelId) { ++it; continue; }
             auto id = it.key(); it = owner->frames_.erase(it);
-            Q_EMIT owner->monitorFrameReady(id, {}); if (id == MonitorId{}) Q_EMIT owner->frameReady({});
+            Q_EMIT owner->monitorFrameUpdated(id, {}); Q_EMIT owner->monitorFrameReady(id, {}); if (id == MonitorId{}) Q_EMIT owner->frameReady({});
         }
         return;
     }
-    for (const auto &m : std::as_const(self->owner->monitors_)) {
+    const auto monitors = owner->monitors_;
+    const auto connection = generation;
+    const auto revision = displayRevision;
+    for (const auto &m : monitors) {
         if (m.id.channelId != channelId || !m.enabled) continue;
         if (!invalidated.isEmpty() && !m.geometry.intersects(invalidated)) continue;
         QElapsedTimer copyTime; if (self->diagnostics.enabled()) copyTime.start();
-        QImage image = copyMonitorRect(primary, m.geometry);
+        auto &cached = self->owner->frames_[m.id];
+        const QImage::Format format = primary.format == 80 ? QImage::Format_RGB16 : primary.format == 32 ? QImage::Format_RGB32 : primary.format == 96 ? QImage::Format_ARGB32 : QImage::Format_Invalid;
+        QRegion damage = invalidated.isEmpty() ? QRegion(QRect(QPoint(), m.geometry.size())) : currentDamage.translated(-m.geometry.topLeft());
+        damage = boundedDamage(damage, QRect(QPoint(), m.geometry.size()));
+        if (!invalidated.isEmpty() && damage.isEmpty()) continue;
+        quint64 copied = 0;
+        if (cached.size() != m.geometry.size() || cached.format() != format || invalidated.isEmpty()) {
+            cached = copyMonitorRect(primary, m.geometry);
+            copied = cached.sizeInBytes();
+            damage = cached.rect();
+        } else {
+            // Validate the whole surface and monitor before constructing a borrowed view.
+            const int pixelBytes = primary.format == 80 ? 2 : 4;
+            if (!primary.data || primary.stride < qint64(primary.width)*pixelBytes || primary.stride <= 0 || primary.width > 16384 || primary.height > 16384 || qint64(primary.stride)*primary.height > 512*1024*1024 || !QRect(0,0,primary.width,primary.height).contains(m.geometry)) {
+                cached = {}; damage = {};
+            } else {
+                QImage source(primary.data + qint64(m.geometry.y())*primary.stride + m.geometry.x()*pixelBytes, m.geometry.width(), m.geometry.height(), primary.stride, format);
+                copied = applyFrameDamage(cached, source, damage);
+            }
+        }
+        const QImage image = cached;
+        self->diagnostics.add(QStringLiteral("copied-bytes"), copied);
         if (copyTime.isValid()) self->diagnostics.add(QStringLiteral("copy-us"), copyTime.nsecsElapsed()/1000);
-        self->owner->frames_[m.id] = image;
+
         self->diagnostics.add(QStringLiteral("copies"));
         self->diagnostics.add(QStringLiteral("frame-bytes"), image.sizeInBytes());
+        Q_EMIT self->owner->monitorFrameUpdated(m.id, damage);
+        if (connection != generation || revision != displayRevision || surfaceRevisions.value(channelId) != surfaceRevision || self->displays.value(channelId) != SPICE_DISPLAY_CHANNEL(channel)) return;
+        self->diagnostics.add(QStringLiteral("delivered"));
         Q_EMIT self->owner->monitorFrameReady(m.id, image);
+        if (connection != generation || revision != displayRevision || surfaceRevisions.value(channelId) != surfaceRevision) return;
         if (m.id == MonitorId{}) Q_EMIT self->owner->frameReady(image);
+        if (connection != generation || revision != displayRevision || surfaceRevisions.value(channelId) != surfaceRevision) return;
     }
 }
 
 void Session::Worker::onInvalidate(SpiceChannel *channel, gint x, gint y, gint width, gint height, gpointer data) {
     static_cast<Worker *>(data)->diagnostics.add(QStringLiteral("invalidations"));
-    static_cast<Worker *>(data)->renderMonitors(channel, QRect(x,y,width,height));
+    if (width > 0 && height > 0) static_cast<Worker *>(data)->scheduleDisplay(channel, QRect(x,y,width,height));
 }
 
 void Session::Worker::onCursorSet(SpiceCursorChannel *channel, gint width, gint height, gint hotX, gint hotY, gpointer rgba, gpointer data) {
@@ -487,6 +557,7 @@ void Session::Worker::disconnect() {
         session = nullptr;
     }
     proxy.reset();
+    ++displayRevision; displayDamage.clear(); displayTickets.clear(); fullRefresh.clear();
     displays.clear(); desiredMonitors.clear(); awaitingTopology = true; layoutPending = false; ++layoutSerial;
     owner->cursors_.clear();
     owner->frames_.clear(); owner->monitors_.clear();

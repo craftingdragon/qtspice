@@ -6,6 +6,7 @@
 #include "locksynchronizer.h"
 #include "displaygeometry.h"
 #include "../core/intervalstats.h"
+#include "../core/framedamage.h"
 #include <QScrollBar>
 #include <QStyle>
 #include <QEvent>
@@ -135,18 +136,26 @@ void Widget::setSession(Session *session) {
     }
     clipboardBridge_->setProperty("users", clipboardBridge_->property("users").toInt() + 1);
     clipboardBridge_->setActive(session_->clipboardReady());
-    frame_ = session_->monitorFrame(monitor_);
+    frame_ = session_->monitorFrame(monitor_).copy();
     const auto cursor = session_->monitorCursor(monitor_.channelId);
     if (!cursor.image.isNull()) { guestCursor_ = QCursor(QPixmap::fromImage(cursor.image), cursor.hotspot.x(), cursor.hotspot.y()); setCursor(guestCursor_); }
-    connect(session_, &Session::frameReady, this, [this](const QImage &image) {
-        if (monitor_ != MonitorId{}) return;
-        frame_ = image; updateDisplayGeometry(); updateGeometry(); update();
-    });
-    connect(session_, &Session::monitorFrameReady, this, [this](MonitorId id, const QImage &image) {
-        if (id != monitor_ || id == MonitorId{}) return;
-        if (image.isNull() && hasFocus()) releaseInputCapture();
-        diagnostics_->add(QStringLiteral("received")); frame_ = image;
-        updateDisplayGeometry(); updateGeometry(); update();
+    connect(session_, &Session::monitorFrameUpdated, this, [this](MonitorId id, const QRegion &damage) {
+        if (id != monitor_) return;
+        const QImage source = session_->monitorFrame(id);
+        const bool geometryChanged = frame_.size() != source.size() || frame_.format() != source.format();
+        diagnostics_->add(QStringLiteral("received"));
+        diagnostics_->add(QStringLiteral("copied-bytes"), applyFrameDamage(frame_, source, damage));
+        if (source.isNull() && hasFocus()) releaseInputCapture();
+        if (geometryChanged) { updateDisplayGeometry(); updateGeometry(); update(); return; }
+        QRegion repaint;
+        const auto area = frameRect();
+        for (auto r : damage) {
+            if (scalingMode_ == ScalingMode::SmoothFit) r.adjust(-1,-1,1,1);
+            QRectF mapped(area.x() + r.x()*area.width()/source.width(), area.y() + r.y()*area.height()/source.height(),
+                          r.width()*area.width()/source.width(), r.height()*area.height()/source.height());
+            repaint += mapped.toAlignedRect();
+        }
+        update(repaint.intersected(QRect(QPoint(), contentSize_)));
     });
     connect(session_, &Session::stateChanged, this, [this](Session::State state) {
         if (state == Session::State::Connecting) statusText_ = QStringLiteral("Connecting…");
@@ -185,7 +194,7 @@ void Widget::setSession(Session *session) {
 void Widget::setMonitor(MonitorId id) {
     if (id == monitor_) return;
     releaseInputCapture(); monitor_ = id; lastRequestedSize_ = {};
-    frame_ = session_ ? session_->monitorFrame(id) : QImage{};
+    frame_ = session_ ? session_->monitorFrame(id).copy() : QImage{};
     updateDisplayGeometry(); scheduleGuestResize(); update();
     Q_EMIT monitorChanged(id);
 }
@@ -425,6 +434,9 @@ void Widget::resizeEvent(QResizeEvent *event) {
     QWidget::resizeEvent(event);
     updateDisplayGeometry();
     scheduleGuestResize();
+    // The fit transform changes across the entire viewport, including old bars.
+    // Native window systems may otherwise repaint only newly exposed strips.
+    update();
 }
 }
 

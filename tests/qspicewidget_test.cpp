@@ -3,6 +3,8 @@
 #include <QSignalSpy>
 #include <QtTest>
 #include <QScrollBar>
+#include <QPaintEvent>
+#include <QResizeEvent>
 #include <QTemporaryDir>
 #include <QSettings>
 #include "../examples/scalingmenu.h"
@@ -12,6 +14,7 @@
 
 namespace QtSpice {
 struct SessionTestAccess {
+    static void frame(Session &s, QImage image, MonitorId id = {}, QRegion damage = {}) { s.frames_[id] = image; Q_EMIT s.monitorFrameUpdated(id, damage.isEmpty() ? QRegion(image.rect()) : damage); }
     static void available(Session &s) { s.monitorConfigurationAvailable_ = true; Q_EMIT s.monitorConfigurationAvailableChanged(true); }
     static void connected(Session &s) { s.setState(Session::State::Connected); }
     static void monitors(Session &s, QList<MonitorInfo> m) { s.monitors_ = m; Q_EMIT s.monitorsChanged(); }
@@ -27,9 +30,30 @@ struct WidgetTestAccess {
     }
 };
 }
+class PaintRegions : public QObject {
+public:
+    QRegion painted;
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() == QEvent::Paint) painted += static_cast<QPaintEvent *>(event)->region();
+        return false;
+    }
+};
 class WidgetTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void partialFramesStayIndependent() {
+        QtSpice::Session s; QtSpice::Widget a,b;
+        a.setSession(&s); b.setSession(&s);
+        QImage frame(100,80,QImage::Format_RGB32); frame.fill(Qt::red);
+        QtSpice::SessionTestAccess::frame(s,frame);
+        frame.setPixelColor(4,5,Qt::blue);
+        frame.setPixelColor(40,50,Qt::green); // outside damage: widgets must not copy it
+        QtSpice::SessionTestAccess::frame(s,frame,{},QRect(4,5,1,1));
+        frame.setPixelColor(40,50,Qt::red);
+        QCOMPARE(QtSpice::WidgetTestAccess::frame(a),frame);
+        QCOMPARE(QtSpice::WidgetTestAccess::frame(b),frame);
+        QCOMPARE(s.monitorFrame({}).pixelColor(40,50),QColor(Qt::green));
+    }
     void lateMonitorUsesCurrentConnectionState() {
         QtSpice::Session session;
         QtSpice::SessionTestAccess::connected(session);
@@ -80,10 +104,10 @@ private Q_SLOTS:
         QCOMPARE(session.findChildren<QObject *>(QStringLiteral("sessionClipboard")).size(), 1);
         QImage a(10,10,QImage::Format_RGB32); a.fill(Qt::red);
         QImage b(20,10,QImage::Format_RGB32); b.fill(Qt::blue);
-        session.frameReady(a); session.monitorFrameReady({0,1}, b);
+        QtSpice::SessionTestAccess::frame(session, a); QtSpice::SessionTestAccess::frame(session, b, {0,1});
         QCOMPARE(QtSpice::WidgetTestAccess::frame(first), a);
         QCOMPARE(QtSpice::WidgetTestAccess::frame(second), b);
-        session.monitorFrameReady({0,1}, {});
+        QtSpice::SessionTestAccess::frame(session, {}, {0,1});
         QVERIFY(QtSpice::WidgetTestAccess::frame(second).isNull());
         QCOMPARE(QtSpice::WidgetTestAccess::frame(first), a);
     }
@@ -283,6 +307,30 @@ private Q_SLOTS:
         QCOMPARE(QtSpice::displayPoint(fit.center(), frame, fit), QPoint(512, 384));
         QCOMPARE(QtSpice::displayPoint(fit.bottomRight()+QPointF(10,10), frame, fit), QPoint(1023,767));
     }
+    void resizeInvalidatesWholeViewport_data() {
+        QTest::addColumn<int>("mode");
+        QTest::newRow("smooth") << int(QtSpice::Widget::ScalingMode::SmoothFit);
+        QTest::newRow("unfiltered") << int(QtSpice::Widget::ScalingMode::UnfilteredFit);
+        QTest::newRow("native") << int(QtSpice::Widget::ScalingMode::NativePixels);
+    }
+    void resizeInvalidatesWholeViewport() {
+        QFETCH(int, mode);
+        QtSpice::Session session;
+        QtSpice::Widget widget;
+        widget.setAutoResizeGuest(false); widget.setSession(&session);
+        widget.setScalingMode(QtSpice::Widget::ScalingMode(mode));
+        widget.resize(500,300); widget.show();
+        QImage image(320,240,QImage::Format_RGB32); image.fill(Qt::red);
+        QtSpice::SessionTestAccess::frame(session,image);
+        QTest::qWait(30);
+        PaintRegions regions; widget.installEventFilter(&regions);
+        // Deliver the resize notification independently of the platform's own
+        // exposure repaint: the handler must invalidate the old transform itself.
+        QResizeEvent resize(widget.size(),QSize(400,240));
+        QApplication::sendEvent(&widget,&resize);
+        QTRY_VERIFY(regions.painted.contains(widget.rect()));
+        QCOMPARE(QtSpice::WidgetTestAccess::frame(widget),image);
+    }
     void filteredRenderingAndNativePixels() {
         QtSpice::Session session;
         QtSpice::Widget widget;
@@ -294,7 +342,7 @@ private Q_SLOTS:
         frame.fill(Qt::black);
         frame.setPixelColor(1, 0, Qt::white);
         frame.setPixelColor(1, 1, Qt::white);
-        session.frameReady(frame);
+        QtSpice::SessionTestAccess::frame(session, frame);
         auto hasGray = [](const QImage &image) {
             for (int y=0; y<image.height(); ++y)
                 for (int x=0; x<image.width(); ++x) {
@@ -327,7 +375,7 @@ private Q_SLOTS:
         widget.setScalingMode(QtSpice::Widget::ScalingMode::NativePixels);
         QImage frame(2048, 1536, QImage::Format_RGB32);
         frame.fill(Qt::red);
-        session.frameReady(frame);
+        QtSpice::SessionTestAccess::frame(session, frame);
         const auto bars = widget.findChildren<QScrollBar *>();
         QCOMPARE(bars.size(), 2);
         for (auto *bar : bars) {

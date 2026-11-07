@@ -24,7 +24,16 @@ struct QtSpice::Session::Worker {
     static void onChannelDestroy(SpiceSession *, SpiceChannel *, gpointer);
     static void onChannelEvent(SpiceChannel *, SpiceChannelEvent, gpointer);
     IntervalStats diagnostics;
-    quint64 pendingFrames = 0;
+    QMap<int, QRegion> displayDamage;
+    QMap<int, quint64> displayTickets;
+    QMap<int, quint64> surfaceRevisions;
+    quint64 nextDisplayTicket = 0;
+    void clearDisplay(int id);
+    QSet<int> fullRefresh;
+    QRegion flushingDamage;
+    std::function<bool(SpiceChannel *, SpiceDisplayPrimary *)> primaryReader = [](SpiceChannel *c, SpiceDisplayPrimary *p) { return spice_display_channel_get_primary(c, 0, p); };
+    quint64 displayRevision = 0;
+    void scheduleDisplay(SpiceChannel *channel, QRect damage = {});
     AudioPlayback audio;
     AudioRecording microphone;
     UsbController usb;

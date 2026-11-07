@@ -151,8 +151,8 @@ Use the same environment variables with simple-viewer or the private-libsoup wra
 
 Pass `--performance-stats` to either viewer for one sample per second per display session, widget, and proxy tunnel (including idle samples). Each sample reports its actual `interval-ms`; a longer interval can indicate an event-loop stall. `counts` reset each interval; `gauges` are current values. Collection and sampling timers are disabled by default, even if the performance logging category is enabled. The option enables that category at startup.
 
-- Display: invalidations, copies, output frame bytes, total copy microseconds, delivered frames, and pending queued frames. Copies include monitor/primary notifications; delivered counts `frameReady` emission, including empty frames.
-- Widget: received frame signals and paint events. Paints can merge several frames or result from window exposure; they are not a video FPS measurement. An attachment line maps widget addresses to session addresses.
+- Display: native invalidations, pending and completed batched flushes, monitor updates (`copies` and `delivered`), logical complete-image bytes (`frame-bytes`), actual cache copy bytes (`copied-bytes`), and copy microseconds. Logical frame bytes are not memory traffic; retained snapshots can require full-image detaches, counted in copied bytes.
+- Widget: received damage notifications, actual copied bytes, and paint events. Paints can merge several frames or result from window exposure; they are not a video FPS measurement. An attachment line maps widget addresses to session addresses.
 - Proxy: upload/download forwarded and socket-written bytes, plus pending reads/writes in each direction. Down means remote to local client; up means the reverse. Written means accepted by the local socket transport, not acknowledged by the final server. Counters include tunnel protocol bytes, and tunnels may also belong to browser traffic. No proxy URL or ticket is logged.
 
 To collect both connection and performance diagnostics:
@@ -163,7 +163,9 @@ QT_MESSAGE_PATTERN='%{time yyyy-MM-dd hh:mm:ss.zzz} %{category}: %{message}' \
 scripts/with-private-libsoup ./build/proxmox-viewer --performance-stats https://your-proxmox-host:8006
 ```
 
-Compare pending proxy buffers with display invalidations/delivery during a freeze. Pending frames growing indicates queued delivery falling behind; invalidations stopping while audio continues indicates a display-path stall, but does not alone identify the remote server as the cause. Very long sample intervals indicate delayed event-loop execution. These diagnostics do not change buffering, rendering, or compression.
+Display damage is combined once per event-loop turn without a refresh cap. Widgets copy and repaint changed regions; initial frames, surface changes, and large damage use full refreshes. Existing full-frame signals remain available for snapshots, but may combine native invalidations.
+
+Compare pending proxy buffers with display invalidations/delivery during a freeze; invalidations stopping while audio continues indicates a display-path stall, but does not alone identify the remote server as the cause. Very long sample intervals indicate delayed event-loop execution. These diagnostics do not change buffering, rendering, or compression.
 
 ## Keyboard actions and lock keys
 

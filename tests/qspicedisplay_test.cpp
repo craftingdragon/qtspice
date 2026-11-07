@@ -5,6 +5,42 @@
 class DisplayTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void damageCopies_data() {
+        QTest::addColumn<int>("format");
+        QTest::newRow("rgb565") << int(QImage::Format_RGB16);
+        QTest::newRow("rgb32") << int(QImage::Format_RGB32);
+        QTest::newRow("argb32") << int(QImage::Format_ARGB32);
+    }
+    void damageCopies() {
+        QFETCH(int, format);
+        QImage source(101, 80, QImage::Format(format)); source.fill(Qt::blue);
+        QImage target(101, 80, QImage::Format(format)); target.fill(Qt::red);
+        QRegion damage(QRect(3,4,5,6)); damage += QRect(90,70,2,3);
+        const auto *storage = target.constBits();
+        QCOMPARE(QtSpice::applyFrameDamage(target, source, damage), quint64((30+6)*source.depth()/8));
+        QCOMPARE(target.constBits(), storage);
+        QCOMPARE(target.pixelColor(3,4), QColor(Qt::blue));
+        QCOMPARE(target.pixelColor(2,4), QColor(Qt::red));
+        QCOMPARE(target.pixelColor(91,72), QColor(Qt::blue));
+        auto retained = target;
+        source.fill(Qt::green);
+        QtSpice::applyFrameDamage(target, source, QRect(3,4,1,1));
+        QCOMPARE(retained.pixelColor(3,4), QColor(Qt::blue));
+        QCOMPARE(target.pixelColor(3,4), QColor(Qt::green));
+        QImage replacement(12,10,QImage::Format_RGB32); replacement.fill(Qt::yellow);
+        QtSpice::applyFrameDamage(target, replacement, replacement.rect());
+        QCOMPARE(target, replacement);
+        QtSpice::applyFrameDamage(target, {}, {}); QVERIFY(target.isNull());
+    }
+    void boundedRegions() {
+        QCOMPARE(QtSpice::boundedDamage(QRect(-5,-5,8,8), QRect(0,0,100,100)), QRegion(QRect(0,0,3,3)));
+        QVERIFY(QtSpice::boundedDamage(QRect(200,200,2,2), QRect(0,0,100,100)).isEmpty());
+        QCOMPARE(QtSpice::boundedDamage(QRect(0,0,50,100), QRect(0,0,100,100)), QRegion(QRect(0,0,100,100)));
+        QRegion fragmented;
+        for (int i=0;i<70;++i) fragmented += QRect(i*2,0,1,1);
+        QCOMPARE(QtSpice::boundedDamage(fragmented,QRect(0,0,200,100)).rectCount(),1);
+    }
+
     void cropsIndependentHeads() {
         QImage backing(100, 40, QImage::Format_RGB32); backing.fill(Qt::red);
         for (int y = 0; y < 40; ++y) for (int x = 50; x < 100; ++x) backing.setPixelColor(x, y, Qt::blue);

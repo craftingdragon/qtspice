@@ -3,7 +3,7 @@
 #include <QSignalSpy>
 #undef signals
 #include "../src/core/qspicesession.h"
-namespace QtSpice { struct SessionTestAccess { static void observed(Session &s, const QList<MonitorInfo> &layout, bool pending) { s.worker_->layoutPending = pending; s.worker_->observeMonitorLayout(layout); } static void actual(Session &s, const QList<MonitorInfo> &layout) { s.monitors_ = layout; } static bool pending(Session &s) { return s.worker_->layoutPending; } static auto &desired(Session &s) { return s.worker_->desiredMonitors; } }; }
+namespace QtSpice { struct SessionTestAccess { static auto &worker(Session &s) { return *s.worker_; } static void observed(Session &s, const QList<MonitorInfo> &layout, bool pending) { s.worker_->layoutPending = pending; s.worker_->observeMonitorLayout(layout); } static void actual(Session &s, const QList<MonitorInfo> &layout) { s.monitors_ = layout; } static bool pending(Session &s) { return s.worker_->layoutPending; } static auto &desired(Session &s) { return s.worker_->desiredMonitors; } }; }
 #include <QtTest>
 #include <QLoggingCategory>
 #include <QScopeGuard>
@@ -19,6 +19,49 @@ void captureConnectionLog(QtMsgType, const QMessageLogContext &context, const QS
 class SessionTest : public QObject {
     Q_OBJECT
 private slots:
+    void batchedDisplayAndStaleWork() {
+        using namespace QtSpice;
+        Session s;
+        auto &worker = SessionTestAccess::worker(s);
+        SpiceSession *native = spice_session_new();
+        auto *channel = spice_channel_new(native, SPICE_CHANNEL_DISPLAY, 7);
+        auto cleanup = qScopeGuard([&] { worker.displays.clear(); g_object_unref(native); });
+        worker.displays[7] = SPICE_DISPLAY_CHANNEL(channel);
+        QImage pixels(100,80,QImage::Format_RGB32); pixels.fill(Qt::red);
+        worker.primaryReader = [&](SpiceChannel *, SpiceDisplayPrimary *p) {
+            p->format = SPICE_SURFACE_FMT_32_xRGB; p->width = pixels.width(); p->height = pixels.height();
+            p->stride = pixels.bytesPerLine(); p->data = pixels.bits(); return true;
+        };
+        SessionTestAccess::actual(s, {{{7,0},{0,0,50,80},true},{{7,1},{50,0,50,80},true}});
+        QSignalSpy updates(&s, &Session::monitorFrameUpdated);
+        worker.scheduleDisplay(channel);
+        QCoreApplication::sendPostedEvents();
+        QCOMPARE(updates.size(),2); updates.clear();
+        auto retained = s.monitorFrame({7,0});
+        pixels.setPixelColor(3,4,Qt::blue); pixels.setPixelColor(51,4,Qt::green);
+        worker.scheduleDisplay(channel,{3,4,1,1}); worker.scheduleDisplay(channel,{51,4,1,1});
+        QCOMPARE(updates.size(),0);
+        QCoreApplication::sendPostedEvents();
+        QCOMPARE(updates.size(),2);
+        QCOMPARE(s.monitorFrame({7,0}).pixelColor(3,4),QColor(Qt::blue));
+        QCOMPARE(s.monitorFrame({7,1}).pixelColor(1,4),QColor(Qt::green));
+        QCOMPARE(retained.pixelColor(3,4),QColor(Qt::red));
+        updates.clear();
+        worker.scheduleDisplay(channel,{0,0,1,1}); worker.clearDisplay(7);
+        QVERIFY(s.monitorFrame({7,0}).isNull()); updates.clear();
+        QCoreApplication::sendPostedEvents(); QVERIFY(updates.isEmpty());
+        int nonemptyLegacy = 0;
+        connect(&s, &Session::monitorFrameReady, &s, [&](MonitorId, const QImage &image) { if (!image.isNull()) ++nonemptyLegacy; });
+        bool cleared = false;
+        connect(&s, &Session::monitorFrameUpdated, &s, [&](MonitorId, const QRegion &) {
+            if (!cleared) { cleared = true; worker.clearDisplay(7); }
+        });
+        worker.scheduleDisplay(channel); QCoreApplication::sendPostedEvents();
+        QCOMPARE(nonemptyLegacy,0);
+        worker.scheduleDisplay(channel); s.disconnectFromHost(); updates.clear();
+        QCoreApplication::sendPostedEvents(); QVERIFY(updates.isEmpty());
+    }
+
     void alreadyAppliedLayoutNeedsNoNewGuestEvent() {
         QtSpice::Session s;
         const QList<QtSpice::MonitorInfo> actual{{{0,0},{0,0,800,600},true},{{0,1},{800,0,1024,768},true}};

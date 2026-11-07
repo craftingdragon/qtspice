@@ -1,6 +1,7 @@
 #pragma once
 #include <QtSpice/QSpiceDisplay.h>
 #include <spice-client.h>
+#include "framedamage.h"
 
 namespace QtSpice {
 inline QImage copyMonitorRect(const SpiceDisplayPrimary &p, QRect r) {

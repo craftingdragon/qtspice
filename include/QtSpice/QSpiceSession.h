@@ -6,6 +6,7 @@
 #include <QImage>
 #include <QSize>
 #include <QRect>
+#include <QRegion>
 #include <QMap>
 #include <compare>
 #include <QtSpice/QSpiceConnection.h>
@@ -155,6 +156,8 @@ Q_SIGNALS:
     void errorOccurred(const QString &message);
     void channelAdded(int type, int id);
     void channelRemoved(int type, int id);
+    // Cache notification; damage is in monitor pixels. Null cache means cleared.
+    void monitorFrameUpdated(QtSpice::MonitorId id, const QRegion &damage);
     void frameReady(const QImage &frame);
     void monitorsChanged();
     void monitorLayoutRequested(const QList<QtSpice::MonitorInfo> &layout);
