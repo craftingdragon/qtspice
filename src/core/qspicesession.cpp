@@ -13,7 +13,6 @@
 #include <algorithm>
 #include <spice/vd_agent.h>
 
-namespace { constexpr qsizetype maxClipboardBytes = 4 * 1024 * 1024; }
 
 Q_LOGGING_CATEGORY(inputLog, "qtspice.input", QtWarningMsg)
 Q_LOGGING_CATEGORY(displayLog, "qtspice.display", QtWarningMsg)
@@ -37,7 +36,16 @@ const char *channelEventName(SpiceChannelEvent event) {
 
 namespace QtSpice {
 
-Session::Worker::Worker(Session *o) : diagnostics("display", o), audio(o), owner(o) {}
+Session::Worker::Worker(Session *o) : diagnostics("display", o), audio(o), owner(o) {
+    clipboard.grab = [this](QList<quint32> types) { if (main) spice_main_channel_clipboard_selection_grab(main, 0, types.data(), types.size()); };
+    clipboard.release = [this] { if (main) spice_main_channel_clipboard_selection_release(main, 0); };
+    clipboard.request = [this](unsigned type) { if (main) spice_main_channel_clipboard_selection_request(main, 0, type); };
+    clipboard.notify = [this](unsigned type, QByteArray bytes) { if (main) spice_main_channel_clipboard_selection_notify(main, 0, type, reinterpret_cast<const guchar *>(bytes.constData()), bytes.size()); };
+    clipboard.received = [this](ClipboardContent content) {
+        Q_EMIT owner->guestClipboardContent(content);
+        if (content.text && content.image.isNull()) Q_EMIT owner->guestClipboardText(*content.text);
+    };
+}
 
 Session::Worker::~Worker() {
     disconnect();
@@ -66,6 +74,7 @@ void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpoint
     if (type == SPICE_CHANNEL_PLAYBACK) self->audio.attach(SPICE_PLAYBACK_CHANNEL(channel));
     if (type == SPICE_CHANNEL_MAIN) {
         self->main = SPICE_MAIN_CHANNEL(channel);
+        g_object_set(channel, "max-clipboard", int(clipboardImageLimit), nullptr);
         g_signal_connect(channel, "main-mouse-update", G_CALLBACK(onMouseUpdate), self);
         g_signal_connect(channel, "main-agent-update", G_CALLBACK(onAgentUpdate), self);
         g_signal_connect(channel, "notify::agent-connected", G_CALLBACK(+[](GObject *object, GParamSpec *, gpointer data) {
@@ -134,8 +143,7 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
         self->mainOpened = false;
         self->sentDisplaySize = {};
         self->clipboardReady = false;
-        self->hostOwnsClipboard = false;
-        self->guestClipboardRequestPending = false;
+        self->clipboard.reset(false);
         QMetaObject::invokeMethod(self->owner, [owner = self->owner] { owner->setClipboardReady(false); }, Qt::QueuedConnection);
     }
     g_signal_handlers_disconnect_by_data(channel, self);
@@ -209,62 +217,31 @@ void Session::Worker::onAgentUpdate(SpiceMainChannel *channel, gpointer data) {
     else self->sentDisplaySize = {};
     if (self->clipboardReady == ready) return;
     self->clipboardReady = ready;
-    self->hostOwnsClipboard = false;
-    self->guestClipboardRequestPending = false;
-    if (ready && !self->hostClipboard.isEmpty()) {
-        guint32 type = VD_AGENT_CLIPBOARD_UTF8_TEXT;
-        spice_main_channel_clipboard_selection_grab(channel, VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD, &type, 1);
-        self->hostOwnsClipboard = true;
-    }
+    self->clipboard.reset(ready);
     QMetaObject::invokeMethod(self->owner, [owner = self->owner, ready] { owner->setClipboardReady(ready); }, Qt::QueuedConnection);
 }
 
 gboolean Session::Worker::onClipboardGrab(SpiceMainChannel *channel, guint selection, gpointer types, guint count, gpointer data) {
     auto *self = static_cast<Worker *>(data);
-    if (!self->clipboardReady || !spice_main_channel_agent_test_capability(channel, VD_AGENT_CAP_CLIPBOARD_BY_DEMAND) ||
-        selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD || !types) return FALSE;
-    const auto *offered = static_cast<const guint32 *>(types);
-    for (guint i = 0; i < count; ++i) {
-        if (offered[i] == VD_AGENT_CLIPBOARD_UTF8_TEXT) {
-            self->hostOwnsClipboard = false;
-            self->guestClipboardRequestPending = true;
-            QMetaObject::invokeMethod(self->owner, [self, channel] {
-                if (self->main == channel && self->clipboardReady && self->guestClipboardRequestPending &&
-                    !self->hostOwnsClipboard &&
-                    spice_main_channel_agent_test_capability(channel, VD_AGENT_CAP_CLIPBOARD_BY_DEMAND))
-                    spice_main_channel_clipboard_selection_request(channel, VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD,
-                                                                   VD_AGENT_CLIPBOARD_UTF8_TEXT);
-            }, Qt::QueuedConnection);
-            return TRUE;
-        }
-    }
-    return FALSE;
+    if (channel != self->main || !self->clipboardReady || selection != 0 || !types || count > 256) return FALSE;
+    QList<quint32> offered;
+    const auto *values = static_cast<const guint32 *>(types);
+    for (guint i = 0; i < count; ++i) offered << values[i];
+    return self->clipboard.offer(offered);
 }
-
-void Session::Worker::onClipboardData(SpiceMainChannel *, guint selection, guint type, gpointer bytes, guint size, gpointer data) {
+void Session::Worker::onClipboardData(SpiceMainChannel *channel, guint selection, guint type, gpointer bytes, guint size, gpointer data) {
     auto *self = static_cast<Worker *>(data);
-    if (!self->clipboardReady || !self->guestClipboardRequestPending || self->hostOwnsClipboard ||
-        selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD || type != VD_AGENT_CLIPBOARD_UTF8_TEXT ||
-        size > maxClipboardBytes || (size && !bytes)) return;
-    self->guestClipboardRequestPending = false;
-    const QString text = QString::fromUtf8(static_cast<const char *>(bytes), size);
-    QMetaObject::invokeMethod(self->owner, [owner = self->owner, text] { Q_EMIT owner->guestClipboardText(text); }, Qt::QueuedConnection);
+    if (channel != self->main || selection != 0 || (size && !bytes)) return;
+    if (size > clipboardImageLimit) { self->clipboard.data(VD_AGENT_CLIPBOARD_NONE, {}); return; }
+    self->clipboard.data(type, QByteArray(static_cast<const char *>(bytes), size));
 }
-
-void Session::Worker::onClipboardRelease(SpiceMainChannel *, guint selection, gpointer data) {
+void Session::Worker::onClipboardRelease(SpiceMainChannel *channel, guint selection, gpointer data) {
     auto *self = static_cast<Worker *>(data);
-    if (selection == VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD) self->guestClipboardRequestPending = false;
+    if (channel == self->main && selection == 0) self->clipboard.guestRelease();
 }
-
 gboolean Session::Worker::onClipboardRequest(SpiceMainChannel *channel, guint selection, guint type, gpointer data) {
     auto *self = static_cast<Worker *>(data);
-    if (!self->clipboardReady || !self->hostOwnsClipboard ||
-        !spice_main_channel_agent_test_capability(channel, VD_AGENT_CAP_CLIPBOARD_BY_DEMAND) ||
-        selection != VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD ||
-        type != VD_AGENT_CLIPBOARD_UTF8_TEXT) return FALSE;
-    spice_main_channel_clipboard_selection_notify(channel, selection, type,
-        reinterpret_cast<const guchar *>(self->hostClipboard.constData()), size_t(self->hostClipboard.size()));
-    return TRUE;
+    return channel == self->main && selection == 0 && self->clipboard.hostRequest(type);
 }
 
 void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent event, gpointer data) {
@@ -407,9 +384,7 @@ void Session::Worker::disconnect() {
     mainOpened = false;
     sentDisplaySize = {};
     clipboardReady = false;
-    hostOwnsClipboard = false;
-    guestClipboardRequestPending = false;
-    hostClipboard.clear();
+    clipboard.reset(false);
     hasPointer = false;
     pressedKeys.clear();
     pressedButtons.clear();
@@ -677,25 +652,11 @@ void Session::sendButton(int button, bool pressed, int buttons) {
 
 void Session::releaseAllInputs() { worker_->post([w = worker_.get()] { w->releaseInputs(); }); }
 
+void Session::setHostClipboardContent(const ClipboardContent &content) {
+    worker_->clipboard.setHost(content);
+}
 void Session::setHostClipboardText(const QString &text) {
-    const QByteArray utf8 = text.toUtf8();
-    worker_->post([w = worker_.get(), utf8] {
-        const bool valid = utf8.size() <= maxClipboardBytes;
-        if (valid && w->hostClipboard == utf8 && w->hostOwnsClipboard) return;
-        w->hostClipboard = valid ? utf8 : QByteArray();
-        w->guestClipboardRequestPending = false;
-        if (!w->clipboardReady || !w->main ||
-            !spice_main_channel_agent_test_capability(w->main, VD_AGENT_CAP_CLIPBOARD_BY_DEMAND)) return;
-        if (!valid || utf8.isEmpty()) {
-            if (w->hostOwnsClipboard)
-                spice_main_channel_clipboard_selection_release(w->main, VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD);
-            w->hostOwnsClipboard = false;
-        } else {
-            guint32 type = VD_AGENT_CLIPBOARD_UTF8_TEXT;
-            spice_main_channel_clipboard_selection_grab(w->main, VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD, &type, 1);
-            w->hostOwnsClipboard = true;
-        }
-    });
+    setHostClipboardContent({text, {}});
 }
 
 void Session::setDesiredDisplaySize(QSize size) {

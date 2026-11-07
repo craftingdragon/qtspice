@@ -6,8 +6,14 @@
 #include <QSize>
 #include <QtSpice/QSpiceConnection.h>
 #include <memory>
+#include <optional>
 
 namespace QtSpice {
+
+struct ClipboardContent {
+    std::optional<QString> text;
+    QImage image;
+};
 
 class Session final : public QObject {
     Q_OBJECT
@@ -57,6 +63,7 @@ public:
     void sendRelativePointer(int dx, int dy, int buttons);
     void sendButton(int button, bool pressed, int buttons);
     void releaseAllInputs();
+    void setHostClipboardContent(const ClipboardContent &content);
     void setHostClipboardText(const QString &text);
     void setDesiredDisplaySize(QSize size);
 
@@ -72,6 +79,7 @@ Q_SIGNALS:
     void mouseModeChanged(QtSpice::Session::MouseMode mode);
     void inputReadyChanged(bool ready);
     void clipboardReadyChanged(bool ready);
+    void guestClipboardContent(const QtSpice::ClipboardContent &content);
     void guestClipboardText(const QString &text);
 
 private:
@@ -95,3 +103,5 @@ private:
 } // namespace QtSpice
 
 Q_DECLARE_OPERATORS_FOR_FLAGS(QtSpice::Session::KeyboardLocks)
+
+Q_DECLARE_METATYPE(QtSpice::ClipboardContent)

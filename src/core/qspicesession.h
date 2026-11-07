@@ -9,6 +9,7 @@
 #include "qspiceaudio.h"
 #include "intervalstats.h"
 #include "keyboardcommands.h"
+#include "clipboardtransfer.h"
 
 struct QtSpice::Session::Worker {
     explicit Worker(Session *owner);
@@ -40,9 +41,7 @@ struct QtSpice::Session::Worker {
     QSize sentDisplaySize;
     bool mainOpened = false;
     bool clipboardReady = false;
-    bool hostOwnsClipboard = false;
-    bool guestClipboardRequestPending = false;
-    QByteArray hostClipboard;
+    ClipboardTransfer clipboard;
     int displayId = 0;
     int lastX = 0;
     int lastY = 0;

@@ -119,8 +119,8 @@ void Widget::setSession(Session *session) {
     if (!session_) { updateKeyboardCapture(); return; }
     connect(session_, &QObject::destroyed, this, [this] { stopKeyboardCapture(); updateKeyboardCapture(); });
     scheduleGuestResize();
-    connect(clipboardBridge_.get(), &ClipboardBridge::hostTextChanged, session_, &Session::setHostClipboardText);
-    connect(session_, &Session::guestClipboardText, clipboardBridge_.get(), &ClipboardBridge::applyGuestText);
+    connect(clipboardBridge_.get(), &ClipboardBridge::hostContentChanged, session_, &Session::setHostClipboardContent);
+    connect(session_, &Session::guestClipboardContent, clipboardBridge_.get(), &ClipboardBridge::applyGuestContent);
     connect(session_, &Session::clipboardReadyChanged, clipboardBridge_.get(), &ClipboardBridge::setActive);
     clipboardBridge_->setActive(session_->clipboardReady());
     connect(session_, &Session::frameReady, this, [this](const QImage &image) { diagnostics_->add(QStringLiteral("received")); frame_ = image; updateDisplayGeometry(); updateGeometry(); update(); });
