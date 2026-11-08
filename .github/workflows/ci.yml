@@ -22,19 +22,27 @@ jobs:
         include:
           - distro: rocky9
             image: rockylinux:9
-            bootstrap: dnf -y module enable nodejs:22 && dnf -y install git nodejs
           - distro: debian13
             image: debian:13
-            bootstrap: apt-get update && apt-get install -y git ca-certificates nodejs
           - distro: arch
             image: archlinux:base
-            bootstrap: pacman -Syu --noconfirm --needed git nodejs
     env:
       PKG_CONFIG_PATH: /opt/qtspice-native/lib/pkgconfig
       LD_LIBRARY_PATH: /opt/qtspice-native/lib
     steps:
-      - name: Install Git and Node.js
-        run: ${{ matrix.bootstrap }}
+      - name: Install Git and Node.js (Rocky)
+        if: matrix.distro == 'rocky9'
+        run: |
+          dnf -y module enable nodejs:22
+          dnf -y install git nodejs
+      - name: Install Git and Node.js (Debian)
+        if: matrix.distro == 'debian13'
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates nodejs
+      - name: Install Git and Node.js (Arch)
+        if: matrix.distro == 'arch'
+        run: pacman -Syu --noconfirm --needed git nodejs
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install dependencies
         run: bash ci/install-deps.sh "${{ matrix.distro }}"
