@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 #include "../examples/fullscreen.h"
 #include <QtSpice/QSpiceSession.h>
 #include <QtTest>

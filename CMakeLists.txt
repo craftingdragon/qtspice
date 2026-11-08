@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
 cmake_minimum_required(VERSION 3.24)
 project(QtSpice VERSION 0.1.0 LANGUAGES C CXX)
 
@@ -8,9 +9,9 @@ set(CMAKE_AUTOMOC ON)
 include(CTest)
 option(QTSPICE_BUILD_EXAMPLES "Build embedding and simple viewer examples" ${PROJECT_IS_TOP_LEVEL})
 option(QTSPICE_BUILD_PROXMOX "Build Proxmox viewer and WebEngine tests" ${PROJECT_IS_TOP_LEVEL})
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Multimedia Network)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Multimedia Network)
 if(BUILD_TESTING)
-  find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
+  find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
 endif()
 if(QTSPICE_BUILD_PROXMOX)
   find_package(Qt6 6.8 REQUIRED COMPONENTS WebEngineWidgets WebChannel)
@@ -112,6 +113,9 @@ target_link_libraries(proxmox-viewer PRIVATE QtSpice Qt6::WebEngineWidgets Qt6::
 
 endif()
 if(BUILD_TESTING)
+  add_executable(publicapi_test tests/publicapi_test.cpp)
+  target_link_libraries(publicapi_test PRIVATE QtSpice::QtSpice Qt6::Test)
+  add_test(NAME publicapi_test COMMAND publicapi_test)
   add_executable(filetransfer_test tests/filetransfer_test.cpp)
   target_compile_definitions(filetransfer_test PRIVATE QT_NO_KEYWORDS)
   target_link_libraries(filetransfer_test PRIVATE QtSpice Qt6::Test Qt6::Network Qt6::Multimedia PkgConfig::SPICE)

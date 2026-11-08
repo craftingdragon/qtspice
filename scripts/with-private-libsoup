@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-3.0-or-later
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 libdir="${QTSPICE_PRIVATE_LIBSOUP_PREFIX:-$root/build/libsoup-private}/lib"

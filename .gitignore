@@ -1,3 +1,9 @@
-/build/
+/build*/
 /PROGRESS.md
 /AGENTS.md
+__pycache__/
+*.pyc
+*.vv
+.env
+.secrets
+.act-artifacts/

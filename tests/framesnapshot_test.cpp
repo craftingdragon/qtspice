@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 #include "../examples/proxmox-viewer/framesnapshot.h"
 #include <QtSpice/QSpiceSession.h>
 #include <QFile>

@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+name: CI
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: rocky9
+            image: rockylinux:9
+            bootstrap: dnf -y module enable nodejs:22 && dnf -y install git nodejs
+          - distro: debian13
+            image: debian:13
+            bootstrap: apt-get update && apt-get install -y git ca-certificates nodejs
+          - distro: arch
+            image: archlinux:base
+            bootstrap: pacman -Syu --noconfirm --needed git nodejs
+    env:
+      PKG_CONFIG_PATH: /opt/qtspice-native/lib/pkgconfig
+      LD_LIBRARY_PATH: /opt/qtspice-native/lib
+    steps:
+      - name: Install Git and Node.js
+        run: ${{ matrix.bootstrap }}
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install dependencies
+        run: bash ci/install-deps.sh "${{ matrix.distro }}"
+      - name: Build and test
+        run: |
+          chown -R builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- bash ci/validate.sh
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tests-${{ matrix.distro }}
+          path: build/Testing/
+          if-no-files-found: warn

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 #include "../examples/browserlogging.h"
 #include "../examples/viewersettings.h"
 #include <QCoreApplication>

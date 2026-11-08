@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 #include "../src/core/keyboardcommands.h"
 #include "../src/widgets/locksynchronizer.h"
 #include "../src/widgets/focusedlocks.h"
@@ -118,10 +119,34 @@ private Q_SLOTS:
         auto *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
         QVERIFY(context);
         auto cleanupContext = qScopeGuard([&] { xkb_context_unref(context); });
-        xkb_rule_names names{};
-        names.layout = "us";
-        names.options = "scrolllock:mod3";
-        auto *keymap = xkb_keymap_new_from_names(context, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
+        // Keep LED decoding independent of the distribution's xkeyboard-config
+        // options (older releases lack scrolllock:mod3).
+        constexpr auto fixture = R"XKB(
+xkb_keymap {
+ xkb_keycodes "test" {
+  minimum = 8; maximum = 10;
+  <SCRL> = 8; <NMLK> = 9; <CAPS> = 10;
+  indicator 1 = "Scroll Lock";
+  indicator 2 = "Num Lock";
+  indicator 3 = "Caps Lock";
+ };
+ xkb_types "test" {
+  type "ONE_LEVEL" { modifiers = None; map[None] = Level1; };
+ };
+ xkb_compatibility "test" {
+  indicator "Scroll Lock" { whichModState = locked; modifiers = Mod3; };
+  indicator "Num Lock" { whichModState = locked; modifiers = Mod2; };
+  indicator "Caps Lock" { whichModState = locked; modifiers = Lock; };
+ };
+ xkb_symbols "test" {
+  key <SCRL> { type="ONE_LEVEL", [ Scroll_Lock ] };
+  key <NMLK> { type="ONE_LEVEL", [ Num_Lock ] };
+  key <CAPS> { type="ONE_LEVEL", [ Caps_Lock ] };
+ };
+};
+)XKB";
+        auto *keymap = xkb_keymap_new_from_string(context, fixture,
+            XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
         QVERIFY(keymap);
         auto cleanupKeymap = qScopeGuard([&] { xkb_keymap_unref(keymap); });
         auto *state = xkb_state_new(keymap);

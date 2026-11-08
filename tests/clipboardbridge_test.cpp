@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 #include "clipboardbridge.h"
 #include "../examples/clipboardmenu.h"
 #include <QTemporaryDir>

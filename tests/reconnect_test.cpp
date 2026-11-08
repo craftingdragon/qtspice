@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 #include "../examples/reconnect.h"
 #include <QtTest>
 class ReconnectTest : public QObject {

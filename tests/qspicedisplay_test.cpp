@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 #include <QtSpice/QSpiceDisplay.h>
 #include <QtTest>
 #include "../src/core/displayframe.h"

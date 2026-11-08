@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 #include <QtSpice/QSpiceWidget.h>
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceDisplay.h>

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 #include "../src/core/tunnelproxy.h"
 #include "../examples/browserproxy.h"
 #include "fakeproxy.h"

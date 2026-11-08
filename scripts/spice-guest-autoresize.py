@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """X11 QXL guest helper. Run as the desktop user, never as root.
 Install: apk add python3 py3-xlib xrandr (as root), then run this --install.
 Applies connected Virtual-* preferred modes at login and on DRM hotplug / RandR events.

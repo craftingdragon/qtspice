@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
 """Build the pinned, patched libsoup without changing the submodule or system."""
 import hashlib
 import os

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 #include <QtSpice/QSpiceSession.h>
 #include "../src/core/clipboardcapability.h"
 #include <QSignalSpy>

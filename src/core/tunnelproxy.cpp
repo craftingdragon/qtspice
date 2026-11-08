@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 #include "tunnelproxy.h"
 #include "proxyconnection.h"
 #include "intervalstats.h"

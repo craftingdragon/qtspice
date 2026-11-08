@@ -7,7 +7,7 @@ do not disable GLib integration or move the session to a worker thread.
 
 ## Build and run
 
-Use C++20 and CMake 3.24 or newer. The library requires Qt 6.4+ Core, Gui,
+Use C++20 and CMake 3.24 or newer. The library requires Qt 6.5+ Core, Gui,
 Widgets, Network and Multimedia, spice-client-glib-2.0 0.35+, pkg-config, and
 FFmpeg libswresample 4+ / libavutil 57+ development packages. Native Wayland
 capture additionally needs the optional dependencies described in the README.
