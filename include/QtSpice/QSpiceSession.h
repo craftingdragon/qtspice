@@ -125,6 +125,8 @@ public:
     void connectUsbDevice(quint64 id);
     void disconnectUsbDevice(quint64 id);
     void cancelUsbConnection();
+    QString guestName() const { return guestName_; }
+    QString guestUuid() const { return guestUuid_; }
     State state() const noexcept;
     MouseMode mouseMode() const noexcept;
     bool inputReady() const noexcept;
@@ -163,6 +165,7 @@ public:
 
 
 Q_SIGNALS:
+    void guestInfoChanged();
     void imageCompressionChanged(QtSpice::Session::ImageCompression preference);
     void imageCompressionStatusChanged(const QString &status);
     void fileTransfersChanged();
@@ -195,6 +198,8 @@ Q_SIGNALS:
     void guestClipboardText(const QString &text);
 
 private:
+    QString guestName_, guestUuid_;
+    void updateGuestInfo(const QString &name, const QString &uuid);
     ImageCompression imageCompression_ = ImageCompression::ServerDefault;
     QList<MonitorInfo> monitors_;
     QMap<MonitorId, QImage> frames_;

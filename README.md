@@ -354,3 +354,11 @@ Physical tray behavior is controlled by native SPICE. Writing discs, audio-CD
 playback and boot support are not promised. Libraries without the CD-sharing APIs
 or backend report that the feature is unavailable. Physical hardware behavior has
 not yet been validated on the development laptop.
+
+## Guest identity
+
+Both viewers show the SPICE server-provided guest name in console window titles,
+including secondary monitor windows. **Connection → Guest Details…** displays
+the name and UUID as selectable text. Missing information is shown as unavailable;
+details clear on disconnect and update when the reconnected server supplies them.
+This does not require the guest agent.

@@ -7,6 +7,7 @@
 #include <QMetaObject>
 #include <QFileInfo>
 #include <QTimer>
+#include <QUuid>
 #include <QLoggingCategory>
 #include <utility>
 #include <cmath>
@@ -530,6 +531,22 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
     }
 }
 
+void Session::updateGuestInfo(const QString &name, const QString &uuid) {
+    if (guestName_ == name && guestUuid_ == uuid) return;
+    guestName_ = name; guestUuid_ = uuid;
+    Q_EMIT guestInfoChanged();
+}
+
+void Session::Worker::refreshGuestInfo() {
+    if (!session) return;
+    gchar *name = nullptr;
+    guint8 *uuid = nullptr; // Borrowed session property: copy before returning.
+    g_object_get(session, "name", &name, "uuid", &uuid, nullptr);
+    const auto id = uuid ? QUuid::fromRfc4122(QByteArray(reinterpret_cast<const char *>(uuid), 16)) : QUuid();
+    owner->updateGuestInfo(QString::fromUtf8(name), id.isNull() ? QString() : id.toString(QUuid::WithoutBraces));
+    g_free(name);
+}
+
 void Session::Worker::connectToConfig(const ConnectionConfig &config) {
     disconnect();
     // Do not log connection configuration: Proxmox proxy URLs can contain tickets.
@@ -549,6 +566,9 @@ void Session::Worker::connectToConfig(const ConnectionConfig &config) {
         proxyUrl = proxy->url();
     }
     session = spice_session_new();
+    auto infoChanged = +[](GObject *, GParamSpec *, gpointer data) { static_cast<Worker *>(data)->refreshGuestInfo(); };
+    g_signal_connect(session, "notify::name", G_CALLBACK(infoChanged), this);
+    g_signal_connect(session, "notify::uuid", G_CALLBACK(infoChanged), this);
     g_object_set(session, "preferred-compression", nativeCompression(owner->imageCompression()), nullptr);
     usb.attach(session);
     owner->sharedDirectory_ = config.sharedDirectory;
@@ -616,6 +636,7 @@ void Session::Worker::disconnect() {
         g_object_unref(session);
         session = nullptr;
     }
+    owner->updateGuestInfo({}, {});
     proxy.reset();
     ++displayRevision; displayDamage.clear(); displayTickets.clear(); fullRefresh.clear();
     displays.clear(); desiredMonitors.clear(); awaitingTopology = true; layoutPending = false; ++layoutSerial;

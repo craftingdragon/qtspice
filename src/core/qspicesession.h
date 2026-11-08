@@ -18,6 +18,7 @@ struct QtSpice::Session::Worker {
     ~Worker();
     quint64 generation = 0;
     void post(std::function<void()> task);
+    void refreshGuestInfo();
     void connectToConfig(const ConnectionConfig &config);
     void disconnect();
     static void onChannelNew(SpiceSession *, SpiceChannel *, gpointer);

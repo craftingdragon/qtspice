@@ -2,10 +2,11 @@
 #include "../src/core/clipboardcapability.h"
 #include <QSignalSpy>
 #include "../examples/compressionmenu.h"
+#include "../examples/guestinfo.h"
 #include <QTemporaryDir>
 #undef signals
 #include "../src/core/qspicesession.h"
-namespace QtSpice { struct SessionTestAccess { static auto &worker(Session &s) { return *s.worker_; } static void observed(Session &s, const QList<MonitorInfo> &layout, bool pending) { s.worker_->layoutPending = pending; s.worker_->observeMonitorLayout(layout); } static void actual(Session &s, const QList<MonitorInfo> &layout) { s.monitors_ = layout; } static bool pending(Session &s) { return s.worker_->layoutPending; } static auto &desired(Session &s) { return s.worker_->desiredMonitors; } }; }
+namespace QtSpice { struct SessionTestAccess { static void info(Session &s, QString name, QString uuid) { s.updateGuestInfo(name, uuid); } static auto &worker(Session &s) { return *s.worker_; } static void observed(Session &s, const QList<MonitorInfo> &layout, bool pending) { s.worker_->layoutPending = pending; s.worker_->observeMonitorLayout(layout); } static void actual(Session &s, const QList<MonitorInfo> &layout) { s.monitors_ = layout; } static bool pending(Session &s) { return s.worker_->layoutPending; } static auto &desired(Session &s) { return s.worker_->desiredMonitors; } }; }
 #include <QtTest>
 #include <QLoggingCategory>
 #include <QScopeGuard>
@@ -21,6 +22,36 @@ void captureConnectionLog(QtMsgType, const QMessageLogContext &context, const QS
 class SessionTest : public QObject {
     Q_OBJECT
 private slots:
+    void guestInformation() {
+        using namespace QtSpice;
+        Session s; QSignalSpy changes(&s, &Session::guestInfoChanged);
+        QMainWindow primary, secondary;
+        GuestInfo::add(&primary, &s);
+        GuestInfo::add(&secondary, &s, QStringLiteral("Monitor 0:1"));
+        QCOMPARE(primary.windowTitle(), QStringLiteral("QtSpice Console"));
+        auto &w = SessionTestAccess::worker(s);
+        w.session = spice_session_new();
+        w.refreshGuestInfo(); // Native all-zero UUID means unavailable.
+        QVERIFY(s.guestUuid().isEmpty()); QVERIFY(changes.isEmpty());
+        const QString uuid = QStringLiteral("6d23cf36-b402-4e92-bd87-c8af1b25cbb4");
+        SessionTestAccess::info(s, QStringLiteral("Alpine <test>"), uuid);
+        QCOMPARE(changes.size(), 1);
+        QCOMPARE(primary.windowTitle(), QStringLiteral("Alpine <test> — QtSpice Console"));
+        QCOMPARE(secondary.windowTitle(), QStringLiteral("Alpine <test> — Monitor 0:1"));
+        primary.findChild<QAction *>(QStringLiteral("guestDetailsAction"))->trigger();
+        auto *dialog = primary.findChild<QDialog *>(QStringLiteral("guestDetailsDialog")); QVERIFY(dialog);
+        primary.findChild<QAction *>(QStringLiteral("guestDetailsAction"))->trigger();
+        QCOMPARE(primary.findChildren<QDialog *>(QStringLiteral("guestDetailsDialog")).size(), 1);
+        QCOMPARE(dialog->findChild<QLabel *>(QStringLiteral("guestName"))->textFormat(), Qt::PlainText);
+        QCOMPARE(dialog->findChild<QLabel *>(QStringLiteral("guestUuid"))->text(), uuid);
+        SessionTestAccess::info(s, QStringLiteral("Alpine <test>"), uuid); QCOMPARE(changes.size(), 1);
+        w.disconnect();
+        QVERIFY(s.guestName().isEmpty()); QVERIFY(s.guestUuid().isEmpty());
+        QCOMPARE(primary.windowTitle(), QStringLiteral("QtSpice Console"));
+        QCOMPARE(dialog->findChild<QLabel *>(QStringLiteral("guestName"))->text(), QStringLiteral("Not available"));
+        SessionTestAccess::info(s, QStringLiteral("Another VM"), {});
+        QCOMPARE(secondary.windowTitle(), QStringLiteral("Another VM — Monitor 0:1"));
+    }
     void compressionPreferences() {
         using namespace QtSpice;
         using Mode = Session::ImageCompression;

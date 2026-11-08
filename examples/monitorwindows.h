@@ -2,6 +2,7 @@
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceWidget.h>
 #include "fullscreen.h"
+#include "guestinfo.h"
 #include "reconnect.h"
 #include "inputmenu.h"
 #include "scalingmenu.h"
@@ -21,6 +22,7 @@ public:
     MonitorWindows(QMainWindow *primary, QtSpice::Session *session, QMenu *view)
         : QObject(primary), primary_(primary), session_(session) {
         primary->installEventFilter(this);
+        GuestInfo::add(primary, session);
         UsbDevices::add(primary, session);
         sending_ = new FileSending(primary, session); sending_->add(primary);
         addMenu(view);
@@ -89,7 +91,7 @@ private:
         auto *window = new QMainWindow;
         windows_[id] = window;
         window->installEventFilter(this);
-        window->setWindowTitle(QStringLiteral("QtSpice · Monitor %1:%2").arg(id.channelId).arg(id.monitorId));
+        GuestInfo::add(window, session_, QStringLiteral("QtSpice · Monitor %1:%2").arg(id.channelId).arg(id.monitorId));
         auto *widget = new QtSpice::Widget(window);
         widget->setMonitor(id); widget->setSession(session_); window->setCentralWidget(widget);
         UsbDevices::add(window, session_);
