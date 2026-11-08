@@ -6,7 +6,7 @@
 #include <QTemporaryDir>
 #undef signals
 #include "../src/core/qspicesession.h"
-namespace QtSpice { struct SessionTestAccess { static void info(Session &s, QString name, QString uuid) { s.updateGuestInfo(name, uuid); } static auto &worker(Session &s) { return *s.worker_; } static void observed(Session &s, const QList<MonitorInfo> &layout, bool pending) { s.worker_->layoutPending = pending; s.worker_->observeMonitorLayout(layout); } static void actual(Session &s, const QList<MonitorInfo> &layout) { s.monitors_ = layout; } static bool pending(Session &s) { return s.worker_->layoutPending; } static auto &desired(Session &s) { return s.worker_->desiredMonitors; } }; }
+namespace QtSpice { struct SessionTestAccess { static void status(Session &s, const QString &text) { s.setMonitorStatus(text); } static void info(Session &s, QString name, QString uuid) { s.updateGuestInfo(name, uuid); } static auto &worker(Session &s) { return *s.worker_; } static void observed(Session &s, const QList<MonitorInfo> &layout, bool pending) { s.worker_->layoutPending = pending; s.worker_->observeMonitorLayout(layout); } static void actual(Session &s, const QList<MonitorInfo> &layout) { s.monitors_ = layout; } static bool pending(Session &s) { return s.worker_->layoutPending; } static auto &desired(Session &s) { return s.worker_->desiredMonitors; } }; }
 #include <QtTest>
 #include <QLoggingCategory>
 #include <QScopeGuard>
@@ -22,6 +22,75 @@ void captureConnectionLog(QtMsgType, const QMessageLogContext &context, const QS
 class SessionTest : public QObject {
     Q_OBJECT
 private slots:
+    void monitorDetailsPresentation() {
+        using namespace QtSpice;
+        QList<MonitorInfo> actual = {{{0,0}, {0,0,1920,953}, true}, {{0,1}, {}, false}};
+        auto text = GuestInfo::monitorDetails(actual, actual, {});
+        QCOMPARE(text.count(QStringLiteral("Monitor 0:0")), 1);
+        QCOMPARE(text.count(QStringLiteral("Monitor 0:1")), 1);
+        QVERIFY(!text.contains(QStringLiteral("requested")));
+        auto requested = actual;
+        requested[0].geometry.setSize({1280,720});
+        text = GuestInfo::monitorDetails(actual, requested, QStringLiteral("Unconfirmed"));
+        QCOMPARE(text.count(QStringLiteral("Monitor 0:0")), 1);
+        QVERIFY(text.contains(QStringLiteral("Actual: 1920×953 at 0,0; last requested: 1280×720 at 0,0")));
+        QVERIFY(text.contains(QStringLiteral("Unconfirmed")));
+        requested.append({{1,0}, {0,0,800,600}, true});
+        text = GuestInfo::monitorDetails(actual, requested, {});
+        QVERIFY(text.contains(QStringLiteral("Monitor 1:0 — Actual: Unavailable; last requested: 800×600 at 0,0")));
+        QVERIFY(GuestInfo::monitorDetails({}, {}, {}).contains(QStringLiteral("No monitors available")));
+    }
+    void sessionDiagnostics() {
+        using namespace QtSpice;
+        Session s; auto &w = SessionTestAccess::worker(s);
+        QSignalSpy changed(&s, &Session::diagnosticsChanged);
+        w.session = spice_session_new();
+        auto *channel = spice_channel_new(w.session, SPICE_CHANNEL_DISPLAY, 7);
+        w.onChannelNew(w.session, channel, &w);
+        QCOMPARE(s.diagnostics().channels.size(), 1);
+        QCOMPARE(s.diagnostics().channels[0].state, ChannelDiagnostics::State::Created);
+        w.onChannelEvent(channel, SPICE_CHANNEL_OPENED, &w);
+        QCOMPARE(s.diagnostics().channels[0].state, ChannelDiagnostics::State::Open);
+        int count = changed.size();
+        w.onChannelEvent(channel, SPICE_CHANNEL_OPENED, &w);
+        QCOMPARE(changed.size(), count);
+        w.onChannelEvent(channel, SPICE_CHANNEL_SWITCHING, &w);
+        QCOMPARE(s.diagnostics().channels[0].state, ChannelDiagnostics::State::Switching);
+        w.onChannelEvent(channel, SPICE_CHANNEL_ERROR_TLS, &w);
+        QCOMPARE(s.diagnostics().channels[0].state, ChannelDiagnostics::State::Error);
+        QVERIFY(GuestInfo::report(&s).contains(QStringLiteral("Error")));
+        w.onChannelEvent(channel, SPICE_CHANNEL_CLOSED, &w);
+        QCOMPARE(s.diagnostics().channels[0].state, ChannelDiagnostics::State::Closed);
+        w.onChannelDestroy(w.session, channel, &w);
+        QVERIFY(s.diagnostics().channels.isEmpty());
+        w.disconnect();
+        QCOMPARE(s.diagnostics(), SessionDiagnostics{});
+    }
+    void detailsReport() {
+        using namespace QtSpice;
+        Session s; QMainWindow window;
+        GuestInfo::add(&window, &s);
+        SessionTestAccess::info(s, QStringLiteral("<b>Guest</b>"), QStringLiteral("test-uuid"));
+        window.findChild<QAction *>(QStringLiteral("guestDetailsAction"))->trigger();
+        auto *dialog = window.findChild<QDialog *>(QStringLiteral("guestDetailsDialog")); QVERIFY(dialog);
+        QCOMPARE(dialog->windowTitle(), QStringLiteral("Session Details"));
+        auto *tabs = dialog->findChild<QTabWidget *>(); QCOMPARE(tabs->count(), 3);
+        QCOMPARE(tabs->tabText(2), QStringLiteral("Channels && Features"));
+        SessionTestAccess::status(s, QStringLiteral("Guest monitor configuration unconfirmed"));
+        QVERIFY(qobject_cast<QPlainTextEdit *>(tabs->widget(1))->toPlainText().contains(QStringLiteral("unconfirmed")));
+        s.setClipboardMode(Session::ClipboardMode::Disabled);
+        QVERIFY(qobject_cast<QPlainTextEdit *>(tabs->widget(2))->toPlainText().contains(QStringLiteral("Clipboard direction: Disabled")));
+        const auto parts = GuestInfo::sections(&s);
+        for (int i = 0; i < 3; ++i) QCOMPARE(qobject_cast<QPlainTextEdit *>(tabs->widget(i))->toPlainText(), parts[i]);
+        QVERIFY(parts[0].contains(QStringLiteral("<b>Guest</b>")));
+        dialog->findChild<QPushButton *>(QStringLiteral("copyDetails"))->click();
+        QCOMPARE(QApplication::clipboard()->text(), GuestInfo::report(&s));
+        SessionTestAccess::info(s, QStringLiteral("New guest"), {});
+        QVERIFY(qobject_cast<QPlainTextEdit *>(tabs->widget(0))->toPlainText().contains(QStringLiteral("New guest")));
+        QVERIFY(!GuestInfo::report(&s).contains(QStringLiteral("test-uuid")));
+        SessionTestAccess::worker(s).disconnect();
+        QVERIFY(qobject_cast<QPlainTextEdit *>(tabs->widget(2))->toPlainText().contains(QStringLiteral("No channels available")));
+    }
     void guestInformation() {
         using namespace QtSpice;
         Session s; QSignalSpy changes(&s, &Session::guestInfoChanged);

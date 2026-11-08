@@ -358,7 +358,17 @@ not yet been validated on the development laptop.
 ## Guest identity
 
 Both viewers show the SPICE server-provided guest name in console window titles,
-including secondary monitor windows. **Connection → Guest Details…** displays
+including secondary monitor windows. **Connection → Session Details…** displays
 the name and UUID as selectable text. Missing information is shown as unavailable;
 details clear on disconnect and update when the reconnected server supplies them.
 This does not require the guest agent.
+
+Session Details also shows event-driven channel states, guest agent capabilities,
+actual and last requested monitor geometry, resize status, compression request
+status, and clipboard/audio/USB/file-sharing readiness. Its three tabs update
+while open without polling or enabling performance logging. Created channels are
+not necessarily open; advertised capabilities do not guarantee that the guest
+applies requests. Compression remains a request rather than a confirmed codec.
+**Copy Details** copies a plain-text snapshot of these fields, omitting connection
+configuration, credentials, proxy URLs, local paths, USB device descriptions and
+raw native errors. Reports are not saved automatically.

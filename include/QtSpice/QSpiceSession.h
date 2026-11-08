@@ -30,6 +30,22 @@ struct MonitorInfo {
     bool operator==(const MonitorInfo &) const = default;
 };
 
+struct ChannelDiagnostics {
+    enum class State { Created, Open, Switching, Closed, Error };
+    int type = 0, id = 0;
+    QString name, event;
+    State state = State::Created;
+    bool operator==(const ChannelDiagnostics &) const = default;
+};
+struct SessionDiagnostics {
+    QList<ChannelDiagnostics> channels;
+    bool agentConnected = false;
+    bool clipboardByDemand = false, monitorConfig = false, monitorPosition = false, fileTransferDisabled = false;
+    QList<MonitorInfo> requestedMonitors;
+    QString monitorStatus;
+    bool operator==(const SessionDiagnostics &) const = default;
+};
+
 struct ClipboardContent {
     std::optional<QString> text;
     QImage image;
@@ -125,6 +141,7 @@ public:
     void connectUsbDevice(quint64 id);
     void disconnectUsbDevice(quint64 id);
     void cancelUsbConnection();
+    SessionDiagnostics diagnostics() const { return diagnostics_; }
     QString guestName() const { return guestName_; }
     QString guestUuid() const { return guestUuid_; }
     State state() const noexcept;
@@ -165,6 +182,7 @@ public:
 
 
 Q_SIGNALS:
+    void diagnosticsChanged();
     void guestInfoChanged();
     void imageCompressionChanged(QtSpice::Session::ImageCompression preference);
     void imageCompressionStatusChanged(const QString &status);
@@ -198,6 +216,8 @@ Q_SIGNALS:
     void guestClipboardText(const QString &text);
 
 private:
+    SessionDiagnostics diagnostics_;
+    void setMonitorStatus(const QString &status);
     QString guestName_, guestUuid_;
     void updateGuestInfo(const QString &name, const QString &uuid);
     ImageCompression imageCompression_ = ImageCompression::ServerDefault;

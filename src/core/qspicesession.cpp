@@ -116,11 +116,24 @@ void Session::Worker::post(std::function<void()> task) {
     task();
 }
 
+void Session::setMonitorStatus(const QString &status) {
+    if (diagnostics_.monitorStatus != status) {
+        diagnostics_.monitorStatus = status;
+        Q_EMIT diagnosticsChanged();
+    }
+    Q_EMIT monitorConfigurationStatusChanged(status);
+}
+
 void Session::Worker::onChannelNew(SpiceSession *, SpiceChannel *channel, gpointer data) {
     auto *self = static_cast<Worker *>(data);
     g_signal_connect(channel, "channel-event", G_CALLBACK(onChannelEvent), self);
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
+    auto &records = self->owner->diagnostics_.channels;
+    const char *channelName = spice_channel_type_to_string(type);
+    records.append({type, id, channelName ? QString::fromUtf8(channelName) : QStringLiteral("Unknown"), {}, ChannelDiagnostics::State::Created});
+    std::sort(records.begin(), records.end(), [](const auto &a, const auto &b) { return std::pair(a.type,a.id) < std::pair(b.type,b.id); });
+    Q_EMIT self->owner->diagnosticsChanged();
     qCDebug(connectionLog) << self->owner << "channel created" << spice_channel_type_to_string(type) << "id" << id;
     if (SPICE_IS_WEBDAV_CHANNEL(channel)) {
         self->webdav.insert(channel);
@@ -189,6 +202,9 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
     auto *self = static_cast<Worker *>(data);
     int type = 0, id = 0;
     g_object_get(channel, "channel-type", &type, "channel-id", &id, nullptr);
+    auto &records = self->owner->diagnostics_.channels;
+    records.removeIf([=](const auto &c) { return c.type == type && c.id == id; });
+    Q_EMIT self->owner->diagnosticsChanged();
     qCDebug(connectionLog) << self->owner << "channel destroyed" << spice_channel_type_to_string(type) << "id" << id;
     self->compressionChannels.remove(channel);
     self->compressionOverrides.remove(channel);
@@ -213,6 +229,11 @@ void Session::Worker::onChannelDestroy(SpiceSession *, SpiceChannel *channel, gp
         self->transfers.detach();
         self->main = nullptr;
         self->microphone.detach();
+        auto &d = self->owner->diagnostics_;
+        if (d.agentConnected || d.clipboardByDemand || d.monitorConfig || d.monitorPosition || d.fileTransferDisabled) {
+            d.agentConnected = d.clipboardByDemand = d.monitorConfig = d.monitorPosition = d.fileTransferDisabled = false;
+            Q_EMIT self->owner->diagnosticsChanged();
+        }
         self->mainOpened = false;
         self->sentDisplaySize = {};
         self->clipboardReady = false;
@@ -272,11 +293,11 @@ void Session::Worker::observeMonitorLayout(const QList<MonitorInfo> &observed) {
         for (const auto &actual : observed) if (actual.id == wanted.id) found = actual.enabled == wanted.enabled && (!wanted.enabled || actual.geometry == wanted.geometry);
         if (!found) matches = false;
     }
-    if (layoutPending && matches) { layoutPending = false; ++layoutSerial; Q_EMIT owner->monitorConfigurationStatusChanged({}); }
+    if (layoutPending && matches) { layoutPending = false; ++layoutSerial; owner->setMonitorStatus({}); }
     if (!layoutPending) {
         // A new guest topology after timeout supersedes the expired request.
         ++layoutSerial;
-        Q_EMIT owner->monitorConfigurationStatusChanged({});
+        owner->setMonitorStatus({});
         desiredMonitors.clear();
         for (const auto &m : observed) desiredMonitors[m.id] = m;
     }
@@ -421,6 +442,14 @@ void Session::Worker::onAgentUpdate(SpiceMainChannel *channel, gpointer data) {
     gboolean connected = FALSE;
     g_object_get(channel, "agent-connected", &connected, nullptr);
     gint caps = 0; g_object_get(channel, "agent-caps-0", &caps, nullptr);
+    auto next = self->owner->diagnostics_;
+    next.agentConnected = connected;
+    auto cap = [=](int value) { return connected && spice_main_channel_agent_test_capability(channel, value); };
+    next.clipboardByDemand = cap(VD_AGENT_CAP_CLIPBOARD_BY_DEMAND);
+    next.monitorConfig = cap(VD_AGENT_CAP_MONITORS_CONFIG);
+    next.monitorPosition = cap(VD_AGENT_CAP_MONITORS_CONFIG_POSITION);
+    next.fileTransferDisabled = cap(VD_AGENT_CAP_FILE_XFER_DISABLED);
+    if (next != self->owner->diagnostics_) { self->owner->diagnostics_ = next; Q_EMIT self->owner->diagnosticsChanged(); }
     const bool transferReady = self->mainOpened && connected && !(quint32(caps) & (1u << VD_AGENT_CAP_FILE_XFER_DISABLED));
     self->transfers.availability(transferReady, transferReady ? QString() : !connected ? QStringLiteral("Guest agent unavailable") : QStringLiteral("Guest file transfer unavailable or disabled"));
     // agent-connected is announced before capabilities; clipboard grab requires
@@ -475,6 +504,17 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
         if (event == SPICE_CHANNEL_OPENED) self->compressionOpened(channel, spice_channel_test_capability(channel, SPICE_DISPLAY_CAP_PREF_COMPRESSION));
         else { self->compressionChannels.remove(channel); self->compressionOverrides.remove(channel); self->compressionStatusChanged(); }
     }
+    for (auto &record : self->owner->diagnostics_.channels) if (record.type == type && record.id == id) {
+        auto next = record;
+        next.event = QString::fromUtf8(channelEventName(event));
+        using S = ChannelDiagnostics::State;
+        if (event == SPICE_CHANNEL_OPENED) next.state = S::Open;
+        else if (event == SPICE_CHANNEL_SWITCHING) next.state = S::Switching;
+        else if (event == SPICE_CHANNEL_CLOSED) next.state = S::Closed;
+        else if (event >= SPICE_CHANNEL_ERROR_CONNECT) next.state = S::Error;
+        if (next != record) { record = next; Q_EMIT self->owner->diagnosticsChanged(); }
+        break;
+    }
     const GError *channelError = spice_channel_get_error(channel);
     qCDebug(connectionLog) << self->owner << "channel event" << spice_channel_type_to_string(type)
         << "id" << id << channelEventName(event) << "code" << int(event)
@@ -514,6 +554,11 @@ void Session::Worker::onChannelEvent(SpiceChannel *channel, SpiceChannelEvent ev
         QMetaObject::invokeMethod(self->owner, [owner = self->owner, generation = self->generation] { if (generation != owner->worker_->generation) return; owner->setState(State::Connected); }, Qt::QueuedConnection);
     } else if (event == SPICE_CHANNEL_CLOSED || event >= SPICE_CHANNEL_ERROR_CONNECT) {
         self->microphone.detach();
+        auto &d = self->owner->diagnostics_;
+        if (d.agentConnected || d.clipboardByDemand || d.monitorConfig || d.monitorPosition || d.fileTransferDisabled) {
+            d.agentConnected = d.clipboardByDemand = d.monitorConfig = d.monitorPosition = d.fileTransferDisabled = false;
+            Q_EMIT self->owner->diagnosticsChanged();
+        }
         self->mainOpened = false;
         self->transfers.availability(false, QStringLiteral("Main channel disconnected"));
         self->sentDisplaySize = {};
@@ -636,6 +681,7 @@ void Session::Worker::disconnect() {
         g_object_unref(session);
         session = nullptr;
     }
+    if (owner->diagnostics_ != SessionDiagnostics{}) { owner->diagnostics_ = {}; Q_EMIT owner->diagnosticsChanged(); }
     owner->updateGuestInfo({}, {});
     proxy.reset();
     ++displayRevision; displayDamage.clear(); displayTickets.clear(); fullRefresh.clear();
@@ -683,9 +729,9 @@ void Session::Worker::sendDisplaySize() {
         spice_main_channel_update_display_enabled(main, m.id.channelId == 0 ? m.id.monitorId : m.id.channelId, TRUE, FALSE);
     const bool sent = spice_main_channel_send_monitor_config(main);
     qCDebug(displayLog) << "monitor config sent" << sent << "agent monitor support" << spice_main_channel_agent_test_capability(main, VD_AGENT_CAP_MONITORS_CONFIG) << "position support" << spice_main_channel_agent_test_capability(main, VD_AGENT_CAP_MONITORS_CONFIG_POSITION);
-    if (!sent) { Q_EMIT owner->monitorConfigurationStatusChanged(QStringLiteral("Could not send guest monitor configuration")); return; }
+    if (!sent) { owner->setMonitorStatus(QStringLiteral("Could not send guest monitor configuration")); return; }
     layoutPending = true; const auto serial = ++layoutSerial;
-    Q_EMIT owner->monitorConfigurationStatusChanged(QStringLiteral("Waiting for guest monitor configuration…"));
+    owner->setMonitorStatus(QStringLiteral("Waiting for guest monitor configuration…"));
     QTimer::singleShot(5000, owner, [this, serial] {
         if (!layoutPending || serial != layoutSerial) return;
         observeMonitorLayout(owner->monitors_);
@@ -701,7 +747,7 @@ void Session::Worker::sendDisplaySize() {
             break;
         }
         layoutPending = false;
-        Q_EMIT owner->monitorConfigurationStatusChanged(QStringLiteral("Guest monitor configuration unconfirmed") + detail);
+        owner->setMonitorStatus(QStringLiteral("Guest monitor configuration unconfirmed") + detail);
     });
 }
 
@@ -990,7 +1036,7 @@ void Session::requestMonitorLayout(const QList<MonitorInfo> &layout) {
         if (m.id.channelId < 0 || m.id.monitorId < 0) return;
         if (!monitors_.isEmpty()) {
             bool advertised = false; for (const auto &slot : monitors_) if (slot.id == m.id) advertised = true;
-            if (!advertised) { Q_EMIT monitorConfigurationStatusChanged(QStringLiteral("Monitor not advertised by guest")); return; }
+            if (!advertised) { setMonitorStatus(QStringLiteral("Monitor not advertised by guest")); return; }
         }
         int wire = m.id.channelId == 0 ? m.id.monitorId : m.id.channelId;
         if (wire < 0 || wire > 255 || ids.contains(wire) || (m.id.channelId != 0 && m.id.monitorId != 0)) return;
@@ -998,6 +1044,7 @@ void Session::requestMonitorLayout(const QList<MonitorInfo> &layout) {
         if (m.enabled && (m.geometry.isEmpty() || m.geometry.x() < 0 || m.geometry.y() < 0 || m.geometry.right() >= 16384 || m.geometry.bottom() >= 16384)) return;
         validated[m.id] = m;
     }
+    if (diagnostics_.requestedMonitors != layout) { diagnostics_.requestedMonitors = layout; Q_EMIT diagnosticsChanged(); }
     if (validated != worker_->desiredMonitors) Q_EMIT monitorLayoutRequested(layout);
     const bool unchangedPending = validated == worker_->desiredMonitors && worker_->layoutPending;
     worker_->desiredMonitors = validated;
