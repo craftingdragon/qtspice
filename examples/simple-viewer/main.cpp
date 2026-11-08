@@ -71,6 +71,7 @@ int main(int argc, char **argv) {
     window.setCentralWidget(widget);
     AudioMenu::add(window.menuBar(), &session);
     CompressionMenu::initialize(&session);
+    ClipboardMenu::initialize(&session);
     CompressionMenu::add(window.menuBar(), &session);
     SharedFolder::addMenu(window.menuBar(), &session);
     auto *viewMenu = window.menuBar()->addMenu(QStringLiteral("View"));

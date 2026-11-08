@@ -128,6 +128,8 @@ void Widget::setSession(Session *session) {
     clipboardBridge_ = session_->findChild<ClipboardBridge *>(QStringLiteral("sessionClipboard"));
     if (!clipboardBridge_) {
         clipboardBridge_ = new ClipboardBridge(session_);
+        clipboardBridge_->setMode(session_->clipboardMode());
+        connect(session_, &Session::clipboardModeChanged, clipboardBridge_, &ClipboardBridge::setMode);
         clipboardBridge_->setObjectName(QStringLiteral("sessionClipboard"));
         connect(clipboardBridge_, &ClipboardBridge::hostContentChanged, session_, &Session::setHostClipboardContent);
         connect(session_, &Session::guestClipboardContent, clipboardBridge_, &ClipboardBridge::applyGuestContent);

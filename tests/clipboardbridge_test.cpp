@@ -1,4 +1,6 @@
 #include "clipboardbridge.h"
+#include "../examples/clipboardmenu.h"
+#include <QTemporaryDir>
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QSignalSpy>
@@ -9,6 +11,99 @@
 class ClipboardBridgeTest : public QObject {
     Q_OBJECT
 private slots:
+    void directionPolicy() {
+        using M = QtSpice::Session::ClipboardMode;
+        for (auto mode : {M::Bidirectional, M::HostToGuest, M::GuestToHost, M::Disabled}) {
+            QtSpice::ClipboardTransfer t;
+            int grabs = 0, releases = 0; QList<unsigned> requests, replies;
+            QList<QtSpice::ClipboardContent> received;
+            t.grab = [&](auto) { ++grabs; }; t.release = [&] { ++releases; };
+            t.request = [&](auto type) { requests << type; };
+            t.notify = [&](auto type, auto) { replies << type; };
+            t.received = [&](auto content) { received << content; };
+            t.setMode(mode); t.reset(true);
+            QImage image(4,4,QImage::Format_ARGB32); image.fill(Qt::red);
+            const bool send = mode == M::Bidirectional || mode == M::HostToGuest;
+            const bool receive = mode == M::Bidirectional || mode == M::GuestToHost;
+            t.setHost({QStringLiteral("host"), image}); QCOMPARE(grabs, int(send));
+            QCOMPARE(t.hostRequest(1), send); QCOMPARE(t.hostRequest(2), send);
+            if (send) QTRY_COMPARE(replies.size(), 2);
+            QCOMPARE(t.offer({1,2}), receive);
+            if (receive) {
+                QTRY_COMPARE(requests.size(), 1); t.data(1,"guest");
+                QCOMPARE(received.size(),1); t.data(2,QtSpice::encodeClipboardImage(image,2));
+                QTRY_COMPARE(received.size(),2);
+            }
+            t.setMode(M::Disabled); const int count = received.size();
+            QVERIFY(!t.hostRequest(1)); QVERIFY(!t.offer({1}));
+            t.setMode(M::Bidirectional); QCoreApplication::processEvents();
+            QCOMPARE(received.size(), count); QVERIFY(!t.hostRequest(1));
+        }
+    }
+    void delayedReplyAfterPolicyChange() {
+        using M = QtSpice::Session::ClipboardMode;
+        QtSpice::ClipboardTransfer t; QList<unsigned> requests; QStringList values;
+        t.grab = [](auto) {}; t.release = [] {}; t.notify = [](auto, auto) {};
+        t.request = [&](auto type) { requests << type; };
+        t.received = [&](auto content) { values << content.text.value_or(QString()); };
+        t.reset(true); t.offer({1}); QTRY_COMPARE(requests.size(),1);
+        t.setMode(M::HostToGuest); t.setMode(M::Bidirectional);
+        t.offer({1}); QCoreApplication::processEvents(); QCOMPARE(requests.size(),1);
+        t.data(1,"stale"); QVERIFY(values.isEmpty()); QCOMPARE(requests.size(),2);
+        t.data(1,"fresh"); QCOMPARE(values,QStringList{"fresh"});
+        t.offer({1}); t.setMode(M::HostToGuest);
+        QCoreApplication::processEvents(); QCOMPARE(requests.size(),2);
+    }
+    void cancelCodecResults() {
+        using M = QtSpice::Session::ClipboardMode;
+        QtSpice::ClipboardTransfer t; int replies = 0, received = 0, releases = 0, requests = 0;
+        t.grab = [](auto) {}; t.release = [&] { ++releases; };
+        t.notify = [&](auto, auto) { ++replies; }; t.received = [&](auto) { ++received; };
+        t.request = [&](auto) { ++requests; }; t.reset(true);
+        QImage image(40,40,QImage::Format_ARGB32); image.fill(Qt::blue);
+        t.setHost({{},image}); t.hostRequest(2); t.setMode(M::GuestToHost);
+        QCOMPARE(releases,1); QTest::qWait(50); QCOMPARE(replies,0);
+        t.setMode(M::Bidirectional); t.setHost({{},image}); t.hostRequest(2);
+        t.setMode(M::HostToGuest); t.guestRelease(); QTRY_COMPARE(replies,1);
+        t.setMode(M::GuestToHost);
+        t.offer({2}); QTRY_COMPARE(requests,1);
+        t.data(2,QtSpice::encodeClipboardImage(image,2)); t.setMode(M::Disabled);
+        QTest::qWait(50); QCOMPARE(received,0);
+        t.setMode(M::Bidirectional); t.offer({2}); QTRY_COMPARE(requests,2);
+        t.data(2,QtSpice::encodeClipboardImage(image,2));
+        t.setMode(M::GuestToHost); QTRY_COMPARE(received,1);
+    }
+    void bridgeDirections() {
+        using M = QtSpice::Session::ClipboardMode;
+        QtSpice::ClipboardBridge bridge;
+        bridge.setMode(M::Disabled); bridge.setActive(true);
+        QSignalSpy changes(&bridge, &QtSpice::ClipboardBridge::hostContentChanged);
+        QGuiApplication::clipboard()->setText("local"); QCOMPARE(changes.size(),0);
+        bridge.applyGuestText("blocked"); QCOMPARE(QGuiApplication::clipboard()->text(),QString("local"));
+        bridge.setMode(M::HostToGuest); QCOMPARE(changes.size(),0);
+        QGuiApplication::clipboard()->setText("fresh"); QCOMPARE(changes.size(),1);
+        bridge.setMode(M::GuestToHost); bridge.applyGuestText("remote");
+        QCOMPARE(changes.size(),1); QCOMPARE(QGuiApplication::clipboard()->text(),QString("remote"));
+        bridge.setMode(M::Disabled); QCOMPARE(QGuiApplication::clipboard()->text(),QString("remote"));
+    }
+    void policyMenus() {
+        using M = QtSpice::Session::ClipboardMode;
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        QCoreApplication::setOrganizationName("ClipboardTest"); QCoreApplication::setApplicationName("menus");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat,QSettings::UserScope,dir.path());
+        QtSpice::Session session, other; QCOMPARE(session.clipboardMode(),M::Bidirectional);
+        QSignalSpy changed(&session,&QtSpice::Session::clipboardModeChanged);
+        session.setClipboardMode(static_cast<M>(99)); session.setClipboardMode(M::Bidirectional); QCOMPARE(changed.size(),0);
+        QMenu a,b; ClipboardMenu::add(&a,&session); ClipboardMenu::add(&b,&session);
+        auto *first=a.actions().first()->menu(); auto *second=b.actions().first()->menu();
+        first->actions()[3]->trigger(); QCOMPARE(session.clipboardMode(),M::Disabled);
+        QVERIFY(second->actions()[3]->isChecked()); QCOMPARE(other.clipboardMode(),M::Bidirectional);
+        ClipboardMenu::initialize(&other); QCOMPARE(other.clipboardMode(),M::Disabled);
+        session.disconnectFromHost(); QCOMPARE(session.clipboardMode(),M::Disabled);
+        QSettings().setValue("input/clipboardMode","invalid"); ClipboardMenu::initialize(&other);
+        QCOMPARE(other.clipboardMode(),M::Bidirectional); QSettings().clear();
+    }
     void codecs() {
         for (auto type : {2u, 3u, 4u, 5u}) {
             const auto format = QtSpice::clipboardFormat(type);

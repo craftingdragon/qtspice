@@ -780,6 +780,13 @@ Session::~Session() = default;
 Session::State Session::state() const noexcept { return state_; }
 Session::MouseMode Session::mouseMode() const noexcept { return mouseMode_; }
 bool Session::inputReady() const noexcept { return inputReady_; }
+void Session::setClipboardMode(ClipboardMode mode) {
+    if (mode < ClipboardMode::Bidirectional || mode > ClipboardMode::Disabled || mode == clipboardMode_) return;
+    clipboardMode_ = mode;
+    worker_->clipboard.setMode(mode);
+    Q_EMIT clipboardModeChanged(mode);
+}
+
 bool Session::clipboardReady() const noexcept { return clipboardReady_; }
 
 void Session::setState(State state) {

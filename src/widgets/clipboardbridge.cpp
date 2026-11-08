@@ -13,7 +13,14 @@ ClipboardBridge::ClipboardBridge(QObject *parent) : QObject(parent) {
     });
 }
 ClipboardBridge::~ClipboardBridge() { pool_.clear(); pool_.waitForDone(); }
+void ClipboardBridge::setMode(Session::ClipboardMode mode) {
+    const bool send = mode == Session::ClipboardMode::Bidirectional || mode == Session::ClipboardMode::HostToGuest;
+    receiveAllowed_ = mode == Session::ClipboardMode::Bidirectional || mode == Session::ClipboardMode::GuestToHost;
+    if (sendAllowed_ != send) { ++generation_; pool_.clear(); }
+    sendAllowed_ = send;
+}
 void ClipboardBridge::readHost() {
+    if (!sendAllowed_) return;
     const auto serial = ++generation_; pool_.clear();
     const auto *mime = QGuiApplication::clipboard()->mimeData();
     ClipboardContent content;
@@ -40,7 +47,7 @@ void ClipboardBridge::readHost() {
                         if (!content.image.isNull()) break;
                     }
                     if (guard) QMetaObject::invokeMethod(guard, [guard, serial, content] {
-                        if (guard && guard->active_ && guard->generation_ == serial) guard->publishHost(content);
+                        if (guard && guard->active_ && guard->sendAllowed_ && guard->generation_ == serial) guard->publishHost(content);
                     }, Qt::QueuedConnection);
                 });
                 return;
@@ -62,7 +69,7 @@ void ClipboardBridge::setActive(bool active) {
     if (active_) readHost();
 }
 void ClipboardBridge::applyGuestContent(const ClipboardContent &content) {
-    if (!active_) return;
+    if (!active_ || !receiveAllowed_) return;
     ++generation_; pool_.clear();
     guest_ = content; hasGuest_ = true;
     auto *mime = new QMimeData;

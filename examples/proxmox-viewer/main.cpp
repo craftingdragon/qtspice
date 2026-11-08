@@ -48,6 +48,7 @@ public:
         setCentralWidget(widget);
         AudioMenu::add(menuBar(), &session_);
         CompressionMenu::initialize(&session_);
+        ClipboardMenu::initialize(&session_);
         CompressionMenu::add(menuBar(), &session_);
         SharedFolder::addMenu(menuBar(), &session_);
         auto *viewMenu = menuBar()->addMenu(QStringLiteral("View"));

@@ -11,12 +11,14 @@ public:
     explicit ClipboardBridge(QObject *parent = nullptr);
     ~ClipboardBridge() override;
     void setActive(bool active);
+    void setMode(Session::ClipboardMode mode);
     void applyGuestContent(const ClipboardContent &content);
     void applyGuestText(const QString &text);
 Q_SIGNALS:
     void hostContentChanged(const QtSpice::ClipboardContent &content);
     void hostTextChanged(const QString &text);
 private:
+    bool sendAllowed_ = true, receiveAllowed_ = true;
     bool active_ = false;
     bool applyingGuest_ = false;
     ClipboardContent guest_;

@@ -121,6 +121,10 @@ public:
     State state() const noexcept;
     MouseMode mouseMode() const noexcept;
     bool inputReady() const noexcept;
+    enum class ClipboardMode { Bidirectional, HostToGuest, GuestToHost, Disabled };
+    Q_ENUM(ClipboardMode)
+    ClipboardMode clipboardMode() const noexcept { return clipboardMode_; }
+    void setClipboardMode(ClipboardMode mode);
     bool clipboardReady() const noexcept;
     void connectToHost(const QString &host, quint16 port);
     void connectToConfig(const ConnectionConfig &config);
@@ -177,6 +181,7 @@ Q_SIGNALS:
     void cursorChanged(const QImage &cursor, int hotX, int hotY);
     void mouseModeChanged(QtSpice::Session::MouseMode mode);
     void inputReadyChanged(bool ready);
+    void clipboardModeChanged(QtSpice::Session::ClipboardMode mode);
     void clipboardReadyChanged(bool ready);
     void guestClipboardContent(const QtSpice::ClipboardContent &content);
     void guestClipboardText(const QString &text);
@@ -197,6 +202,7 @@ private:
     State state_ = State::Disconnected;
     MouseMode mouseMode_ = MouseMode::Client;
     bool inputReady_ = false;
+    ClipboardMode clipboardMode_ = ClipboardMode::Bidirectional;
     bool clipboardReady_ = false;
     void setState(State state);
     void setMouseMode(MouseMode mode);

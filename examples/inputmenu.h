@@ -1,4 +1,5 @@
 #pragma once
+#include "clipboardmenu.h"
 #include <QtSpice/QSpiceWidget.h>
 #include <QtSpice/QSpiceSession.h>
 #include <QMenuBar>
@@ -7,6 +8,7 @@
 #include <QSettings>
 inline void addInputMenu(QMenuBar *bar, QStatusBar *status, QtSpice::Widget *widget, QtSpice::Session *session = nullptr) {
     auto *menu = bar->addMenu(QStringLiteral("Input"));
+    if (session) ClipboardMenu::add(menu, session);
     auto *send = menu->addAction(QStringLiteral("Send Ctrl+Alt+Delete"));
     send->setObjectName(QStringLiteral("sendCtrlAltDelete"));
     send->setEnabled(session && session->inputReady());

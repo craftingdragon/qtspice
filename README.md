@@ -318,3 +318,17 @@ of one session share the choice; other already-open sessions are independent.
 Compression can increase server CPU use. These settings do not limit bandwidth or
 change video codecs, streaming detection, or JPEG settings, so video bandwidth may
 remain unchanged. No periodic diagnostics or network polling are added.
+
+## Clipboard sharing controls
+
+Both viewers offer **Input → Clipboard**: **Bidirectional** (the default),
+**Host → Guest Only**, **Guest → Host Only**, or **Disabled**. The choice applies
+immediately to text and images in every monitor window of that session, and is
+saved separately for each viewer. Other already-open sessions keep their choice.
+Guest-agent clipboard support is still required.
+
+Re-enabling a direction waits for the next copy; it does not replay old content.
+Initial connection and reconnect offer the current host clipboard when sending
+is permitted. Disabling a direction cancels pending content in that direction,
+without clearing either clipboard or recalling content already transferred.
+File sending and shared folders are independent of this setting.
