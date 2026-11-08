@@ -1,4 +1,5 @@
-#include "../examples/spicelogging.h"
+#include "../src/core/spicelogging_p.h"
+#include <QtSpice/QSpiceSession.h>
 #include <QtTest>
 #include <QProcess>
 
@@ -33,8 +34,7 @@ private slots:
             "cursor_handle_init: assertion 'c->init_done == FALSE' failed"));
     }
     void defaultQuietAndDebugOverride() {
-        SpiceLogging::configure();
-        SpiceLogging::configure(); // Application initialization is idempotent.
+        QtSpice::Session first, second; // Native logging is initialized internally, once.
         QLoggingCategory::setFilterRules(QStringLiteral("qtspice.transport.debug=false"));
         QVERIFY(!SpiceLogging::transportCategory().isDebugEnabled());
         g_log("GSpice", G_LOG_LEVEL_WARNING, "%s", g_strerror(EAGAIN));
@@ -48,7 +48,7 @@ private slots:
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     if (app.arguments().contains(QStringLiteral("--probe-forward"))) {
-        SpiceLogging::configure();
+        QtSpice::Session session;
         g_log("GSpice", G_LOG_LEVEL_WARNING, "unrelated SPICE warning");
         g_log("GSpice", G_LOG_LEVEL_CRITICAL, "cursor_handle_init: assertion 'c->init_done == FALSE' failed");
         g_log("Other", G_LOG_LEVEL_WARNING, "unrelated domain warning");

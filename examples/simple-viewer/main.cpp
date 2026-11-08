@@ -2,7 +2,6 @@
 #include "../reconnect.h"
 #include <QFileDialog>
 #include "../audiomenu.h"
-#include "../spicelogging.h"
 #include "../sharedfolder.h"
 #include <QtSpice/QSpiceSession.h>
 #include <QtSpice/QSpiceWidget.h>
@@ -23,7 +22,6 @@
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
-    SpiceLogging::configure();
     QCoreApplication::setApplicationName(QStringLiteral("simple-viewer"));
     QCoreApplication::setOrganizationName(QStringLiteral("QtSpice"));
     QCommandLineParser parser;

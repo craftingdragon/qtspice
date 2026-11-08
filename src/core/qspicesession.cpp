@@ -1,4 +1,5 @@
 #include "qspicesession.h"
+#include "spicelogging_p.h"
 #include "keyboardcommands.h"
 #include "clipboardcapability.h"
 #include "displayframe.h"
@@ -95,6 +96,7 @@ void Session::disconnectUsbDevice(quint64 id) { worker_->usb.request(id, false);
 void Session::cancelUsbConnection() { worker_->usb.cancel(); }
 
 Session::Worker::Worker(Session *o) : diagnostics("display", o), audio(o), microphone(o), usb(o), transfers(o), owner(o) {
+    SpiceLogging::configure();
     diagnostics.updateGauges = [this] { diagnostics.gauge(QStringLiteral("pending-flushes"), displayDamage.size()); };
     clipboard.grab = [this](QList<quint32> types) { if (main) spice_main_channel_clipboard_selection_grab(main, 0, types.data(), types.size()); };
     clipboard.release = [this] { if (main) spice_main_channel_clipboard_selection_release(main, 0); };

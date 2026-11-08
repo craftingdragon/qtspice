@@ -1,7 +1,6 @@
 #include "../monitorwindows.h"
 #include "ticketbridge.h"
 #include "../audiomenu.h"
-#include "../spicelogging.h"
 #include "../browserlogging.h"
 #include "../sharedfolder.h"
 #include "certificatestore.h"
@@ -228,7 +227,6 @@ private:
 int main(int argc, char **argv) {
     configureBrowserLogging();
     QApplication app(argc, argv);
-    SpiceLogging::configure();
     QCoreApplication::setOrganizationName(QStringLiteral("QtSpice"));
     QCoreApplication::setApplicationName(QStringLiteral("ProxmoxViewer"));
     QCommandLineParser parser;

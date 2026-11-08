@@ -12,7 +12,7 @@ public:
     void cancel();
     void capture(const QImage &frame);
 
-Q_SIGNALS:
+signals:
     void pendingChanged(bool pending);
     void saved(const QString &path);
     void failed(const QString &message);

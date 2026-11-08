@@ -65,7 +65,7 @@ public slots:
             if (guard) guard->request(path, params, origin, done);
             else done({}, QStringLiteral("Proxmox browser is unavailable"));
         };
-        source([guard, source](auto config, QString error) { if (!guard) return; if (config && guard->opened) guard->opened(*config, source); else Q_EMIT guard->errorOccurred(error); });
+        source([guard, source](auto config, QString error) { if (!guard) return; if (config && guard->opened) guard->opened(*config, source); else emit guard->errorOccurred(error); });
     }
     void reply(QString id, QString raw, bool ok) {
         if (!pending_.contains(id)) return;

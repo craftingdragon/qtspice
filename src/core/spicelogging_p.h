@@ -4,8 +4,8 @@
 #include <cerrno>
 #include <cstring>
 
-// Application policy only: embedders of the QtSpice library retain their own
-// GLib logging policy. Compare the full localized diagnostic, not a substring.
+// Private native logging adapter. Only the exact transient TLS backpressure
+// warning is routed to Qt debug logging; other native diagnostics are preserved.
 namespace SpiceLogging {
 inline bool isBackpressureWarning(const gchar *domain, GLogLevelFlags level, const gchar *message) {
     if (!domain || std::strcmp(domain, "GSpice") != 0 || !message ||

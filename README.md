@@ -152,7 +152,7 @@ Connection lifecycle logging is quiet by default. Enable `qtspice.connection` to
 QT_LOGGING_RULES='qtspice.connection.debug=true' QT_MESSAGE_PATTERN='%{time yyyy-MM-dd hh:mm:ss.zzz} %{category}: %{message}' ./build/proxmox-viewer
 ```
 
-Use the same environment variables with simple-viewer or the private-libsoup wrapper. Session object addresses distinguish concurrent consoles. Connection configuration, passwords, and proxy URLs are omitted; native error messages may still identify network endpoints. These logs diagnose disconnects; they do not measure bandwidth or change compression/reconnection behavior. To also inspect expected TLS backpressure messages in the example viewers, add `;qtspice.transport.debug=true` to `QT_LOGGING_RULES`.
+Use the same environment variables with simple-viewer or the private-libsoup wrapper. Session object addresses distinguish concurrent consoles. Connection configuration, passwords, and proxy URLs are omitted; native error messages may still identify network endpoints. These logs diagnose disconnects; they do not measure bandwidth or change compression/reconnection behavior. To also inspect expected TLS backpressure messages from the library, add `;qtspice.transport.debug=true` to `QT_LOGGING_RULES`.
 
 Pass `--performance-stats` to either viewer for one sample per second per display session, widget, and proxy tunnel (including idle samples). Each sample reports its actual `interval-ms`; a longer interval can indicate an event-loop stall. `counts` reset each interval; `gauges` are current values. Collection and sampling timers are disabled by default, even if the performance logging category is enabled. The option enables that category at startup.
 
