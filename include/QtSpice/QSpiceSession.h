@@ -112,6 +112,13 @@ public:
     void cancelFileTransfer(quint64 id);
     void cancelAllFileTransfers();
     void clearFinishedFileTransfers();
+    enum class SharedCdState { Idle, Creating, Connecting, Connected, Disconnecting, Error };
+    Q_ENUM(SharedCdState)
+    bool shareCd(const QString &path, QString *error = nullptr);
+    void disconnectSharedCd();
+    SharedCdState sharedCdState() const;
+    QString sharedCdSource() const;
+    QString sharedCdError() const;
     QList<UsbDeviceInfo> usbDevices() const;
     int usbFreeChannels() const;
     QString usbError() const;
@@ -160,6 +167,7 @@ Q_SIGNALS:
     void imageCompressionStatusChanged(const QString &status);
     void fileTransfersChanged();
     void fileTransferReadinessChanged();
+    void sharedCdChanged();
     void usbChanged();
     void audioChanged();
     void microphoneChanged();

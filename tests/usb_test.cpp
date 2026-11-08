@@ -2,6 +2,8 @@
 #include "../examples/usbdevices.h"
 #include <QtTest>
 #include <QSignalSpy>
+#include <QTemporaryFile>
+#include <QTemporaryDir>
 using namespace QtSpice;
 namespace QtSpice {
 struct SessionTestAccess {
@@ -19,6 +21,72 @@ struct SessionTestAccess {
 class UsbTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void cdValidationAndLifecycle() {
+        QTemporaryFile image; QVERIFY(image.open());
+        QVERIFY(!UsbController::validateCdSource(image.fileName()).isEmpty());
+        image.write(QByteArray(4096, '\0')); image.flush();
+        QVERIFY(UsbController::validateCdSource(image.fileName()).isEmpty());
+        QTemporaryDir dir; QVERIFY(!UsbController::validateCdSource(dir.path()).isEmpty());
+        QVERIFY(!UsbController::validateCdSource("/does/not/exist").isEmpty());
+        QVERIFY(!UsbController::validateCdSource("/dev/null").isEmpty());
+        Session owner; UsbController usb(&owner); QString error; int creates = 0;
+        QVERIFY(!usb.shareCd(image.fileName(), &error));
+        usb.createCd = [&](auto) { ++creates; return QString(); };
+        usb.update({},1); QVERIFY(usb.shareCd(image.fileName(), &error));
+        QCOMPARE(usb.cdState,Session::SharedCdState::Creating);
+        QVERIFY(!usb.shareCd(image.fileName(), &error)); QCOMPARE(creates,1);
+        UsbController::Completion completion;
+        usb.operation = [&](auto, auto, auto done) { completion = done; };
+        usb.update({{10,"CD",false,UsbDeviceInfo::State::Available,true,{}}},1);
+        usb.cdDeviceAdded(10); QVERIFY(completion);
+        QCOMPARE(usb.cdState,Session::SharedCdState::Connecting);
+        completion({}); QCOMPARE(usb.cdState,Session::SharedCdState::Connected);
+        usb.stopCd(); QCOMPARE(usb.cdState,Session::SharedCdState::Disconnecting);
+        completion({}); usb.update({},1); QCOMPARE(usb.cdState,Session::SharedCdState::Idle);
+        QVERIFY(usb.cdSource.isEmpty());
+        QVERIFY(usb.shareCd(image.fileName())); usb.stopCd();
+        bool cancelled = false; usb.cancellation = [&] { cancelled = true; };
+        usb.update({{11,"CD",false,UsbDeviceInfo::State::Available,true,{}}},1);
+        usb.cdDeviceAdded(11); QVERIFY(cancelled);
+        completion("Cancelled"); usb.update({},1); QCOMPARE(usb.cdState,Session::SharedCdState::Error);
+        QVERIFY(!usb.cdError.isEmpty());
+        QVERIFY(usb.shareCd(image.fileName())); usb.detach();
+        completion({}); QCOMPARE(usb.cdState,Session::SharedCdState::Idle);
+        QVERIFY(usb.cdSource.isEmpty());
+        usb.update({},1); usb.createCd = [](auto) { return QStringLiteral("No media"); };
+        QVERIFY(!usb.shareCd(image.fileName(), &error)); QCOMPARE(error,QString("No media"));
+        QCOMPARE(usb.cdState,Session::SharedCdState::Error);
+    }
+    void nativeCdFailureCleanup() {
+        Session owner; UsbController usb(&owner);
+        auto *native = spice_session_new(); usb.attach(native);
+        if (!usb.createCd) { usb.detach(); g_object_unref(native); QSKIP("CD backend unavailable"); }
+        QTemporaryFile image; QVERIFY(image.open()); image.write(QByteArray(4096,'\0')); image.flush();
+        // Simulate a channel disappearing between validation and native connect.
+        usb.update({},1); QString error;
+        if (!usb.shareCd(image.fileName(), &error)) {
+            usb.detach(); g_object_unref(native); QSKIP(qPrintable(error));
+        }
+        QTRY_COMPARE(usb.cdState,Session::SharedCdState::Error);
+        QTRY_VERIFY(usb.cdSource.isEmpty());
+        for (const auto &device : usb.devices()) {
+            QVERIFY(!device.description.startsWith("Shared CD/DVD"));
+            QVERIFY(!device.description.startsWith("SPICE CD"));
+        }
+        QVERIFY(!usb.cdError.isEmpty());
+        usb.detach(); g_object_unref(native);
+    }
+    void cdDialog() {
+        Session session; QMainWindow a,b;
+        UsbDevices::add(&a,&session); UsbDevices::add(&b,&session);
+        a.findChild<QAction *>("shareCdAction")->trigger();
+        auto *dialog = qobject_cast<QDialog *>(session.property("cdDialog").value<QObject *>()); QVERIFY(dialog);
+        b.findChild<QAction *>("shareCdAction")->trigger();
+        QCOMPARE(session.property("cdDialog").value<QObject *>(),dialog);
+        auto *combo = dialog->findChild<QComboBox *>(); QCOMPARE(combo->count(),2);
+        for (auto *button : dialog->findChildren<QPushButton *>()) if (button->text() == "Share" || button->text() == "Disconnect") QVERIFY(!button->isEnabled());
+        delete dialog; QVERIFY(!session.property("cdDialog").isValid());
+    }
     void operations() {
         Session session; UsbController usb(&session);
         QSignalSpy changed(&session, &Session::usbChanged);

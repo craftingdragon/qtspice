@@ -332,3 +332,25 @@ Initial connection and reconnect offer the current host clipboard when sending
 is permitted. Disabling a direction cancels pending content in that direction,
 without clearing either clipboard or recalling content already transferred.
 File sending and shared folders are independent of this setting.
+
+## CD/DVD sharing
+
+Choose **Devices → Share CD/DVD…** in either viewer to share a local ISO image
+or physical optical drive as a read-only USB optical device. Select the source,
+then Share. One optical source per session is supported; it consumes one free
+SPICE USB redirection channel, configured exactly as for ordinary USB forwarding.
+It does not replace the VM's configured SATA/IDE drive and needs no guest agent.
+
+On Linux, enter an optical-device path such as `/dev/sr0` or `/dev/cdrom` for a
+physical drive. The user must have read access and readable media must be present.
+Other block devices are rejected. Physical-drive selection is currently Linux
+only. Image reads are handled by native SPICE; the file must remain available.
+
+Closing the dialog leaves sharing active. Disconnect or guest eject removes the
+shared device; select Share again to recreate it. Disconnecting the console clears
+sharing, and reconnect never automatically shares a previous source. Sources are
+not saved. USB Devices and Share CD/DVD show the same underlying connection.
+Physical tray behavior is controlled by native SPICE. Writing discs, audio-CD
+playback and boot support are not promised. Libraries without the CD-sharing APIs
+or backend report that the feature is unavailable. Physical hardware behavior has
+not yet been validated on the development laptop.

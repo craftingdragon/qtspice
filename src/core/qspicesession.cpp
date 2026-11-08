@@ -78,6 +78,14 @@ void Session::Worker::compressionOpened(SpiceChannel *channel, bool supported) {
 }
 
 
+bool Session::shareCd(const QString &path, QString *error) {
+    if (state() != State::Connected) { if (error) *error = QStringLiteral("Console disconnected"); return false; }
+    return worker_->usb.shareCd(path, error);
+}
+void Session::disconnectSharedCd() { worker_->usb.stopCd(); }
+Session::SharedCdState Session::sharedCdState() const { return worker_->usb.cdState; }
+QString Session::sharedCdSource() const { return worker_->usb.cdSource; }
+QString Session::sharedCdError() const { return worker_->usb.cdError; }
 QList<UsbDeviceInfo> Session::usbDevices() const { return worker_->usb.devices(); }
 int Session::usbFreeChannels() const { return worker_->usb.freeChannels; }
 QString Session::usbError() const { return worker_->usb.error; }

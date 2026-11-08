@@ -16,6 +16,14 @@ public:
     QList<UsbDeviceInfo> devices() const { return rows.values(); }
     void request(quint64 id, bool connect);
     void cancel();
+    bool shareCd(const QString &path, QString *error = nullptr);
+    void stopCd();
+    void cdDeviceAdded(quint64 id);
+    static QString validateCdSource(const QString &path);
+    Session::SharedCdState cdState = Session::SharedCdState::Idle;
+    QString cdSource, cdError;
+    std::function<QString(const QString &)> createCd;
+
     void refreshChannels() { refresh(); }
     int freeChannels = 0;
     QString error;
@@ -33,6 +41,10 @@ private:
     QMap<quint64, UsbDeviceInfo> rows;
     quint64 nextId = 0, serial = 0, busy = 0;
     bool connecting = false;
+    quint64 cdId = 0;
+    bool cdCreating = false, cdCancelled = false;
+    void cdChanged() { Q_EMIT owner->sharedCdChanged(); }
+    void syncCd();
     GCancellable *pending = nullptr;
     void refresh();
     void changed() { Q_EMIT owner->usbChanged(); }

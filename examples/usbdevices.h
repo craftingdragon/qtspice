@@ -1,4 +1,5 @@
 #pragma once
+#include "cdsharing.h"
 #include <QtSpice/QSpiceWidget.h>
 #include <QDialog>
 #include <QMainWindow>
@@ -13,7 +14,9 @@
 
 namespace UsbDevices {
 inline void add(QMainWindow *window, QtSpice::Session *session) {
-    auto *action = window->menuBar()->addMenu(QStringLiteral("Devices"))->addAction(QStringLiteral("USB Devices…"));
+    auto *menu = window->menuBar()->addMenu(QStringLiteral("Devices"));
+    CdSharing::add(menu, window, session);
+    auto *action = menu->addAction(QStringLiteral("USB Devices…"));
     action->setObjectName(QStringLiteral("usbDevicesAction"));
     QObject::connect(action, &QAction::triggered, window, [window, session] {
         for (auto *widget : window->findChildren<QtSpice::Widget *>()) widget->releaseInputCapture();
