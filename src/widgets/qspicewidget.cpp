@@ -95,6 +95,10 @@ Widget::Widget(QWidget *parent) : QWidget(parent), diagnostics_(std::make_unique
 }
 Widget::~Widget() { if (clipboardBridge_) { int n = clipboardBridge_->property("users").toInt()-1; clipboardBridge_->setProperty("users", n); if (n <= 0) clipboardBridge_->setActive(false); } stopKeyboardCapture(); if (session_ && hasFocus()) session_->releaseAllInputs(); releaseMouseGrab(); }
 void Widget::setSession(Session *session) {
+    if (session_ == session) return;
+    attachSession(session);
+}
+void Widget::attachSession(Session *session) {
     stopKeyboardCapture();
     resizeTimer_.stop();
     if (session_ && session_ != session) session_->setDesiredDisplaySize({});
@@ -105,7 +109,11 @@ void Widget::setSession(Session *session) {
         int n = clipboardBridge_->property("users").toInt() - 1; clipboardBridge_->setProperty("users", n);
         if (n <= 0) clipboardBridge_->setActive(false);
     }
+    clipboardBridge_ = nullptr;
     releaseMouseGrab();
+    hasLastMouse_ = false;
+    relativeRemainderX_ = relativeRemainderY_ = 0;
+    setToolTip({});
     guestCursor_ = QCursor();
     unsetCursor();
     if (session_) {
@@ -120,10 +128,10 @@ void Widget::setSession(Session *session) {
     updateDisplayGeometry();
     statusText_ = QStringLiteral("Disconnected");
     update();
-    if (!session_) { updateKeyboardCapture(); return; }
+    if (!session_) { updateKeyboardCapture(); Q_EMIT sessionChanged(nullptr); return; }
     if (session_->state() == Session::State::Connecting) statusText_ = QStringLiteral("Connecting…");
     else if (session_->state() == Session::State::Connected) statusText_ = QStringLiteral("Waiting for guest monitor…");
-    connect(session_, &QObject::destroyed, this, [this] { stopKeyboardCapture(); updateKeyboardCapture(); });
+    connect(session_, &QObject::destroyed, this, [this] { attachSession(nullptr); });
     scheduleGuestResize();
     clipboardBridge_ = session_->findChild<ClipboardBridge *>(QStringLiteral("sessionClipboard"));
     if (!clipboardBridge_) {
@@ -192,6 +200,7 @@ void Widget::setSession(Session *session) {
         updateKeyboardCapture();
     });
     updateKeyboardCapture();
+    Q_EMIT sessionChanged(session_);
 }
 void Widget::setMonitor(MonitorId id) {
     if (id == monitor_) return;

@@ -2,9 +2,14 @@
 
 Qt 6 SPICE client library based on `spice-client-glib-2.0` (0.35+), without GTK widgets.
 
+## Embed in your application
+
+See the [embedding guide and widget API reference](docs/embedding.md) and the
+[minimal runnable example](examples/embedded-viewer/main.cpp).
+
 ## Build
 
-Requires a C++20 compiler, CMake 3.24+, Qt 6 Core, Gui, Widgets, Test, Multimedia, WebEngineWidgets, WebChannel and Network, pkg-config, `spice-client-glib-2.0`, and FFmpeg `libswresample` (4+) / `libavutil` (57+) development files. Native Wayland relative pointer capture is built when Qt 6.5+, Qt GuiPrivate headers, `wayland-client`, `wayland-protocols`, and `wayland-scanner` are available.
+For the default build (including viewers and tests): requires a C++20 compiler, CMake 3.24+, Qt 6 Core, Gui, Widgets, Test, Multimedia, WebEngineWidgets, WebChannel and Network, pkg-config, `spice-client-glib-2.0`, and FFmpeg `libswresample` (4+) / `libavutil` (57+) development files. Native Wayland relative pointer capture is built when Qt 6.5+, Qt GuiPrivate headers, `wayland-client`, `wayland-protocols`, and `wayland-scanner` are available.
 
 ```sh
 cmake -S . -B build

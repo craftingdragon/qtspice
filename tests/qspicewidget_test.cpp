@@ -41,6 +41,75 @@ public:
 class WidgetTest : public QObject {
     Q_OBJECT
 private Q_SLOTS:
+    void publicAttachmentLifecycle() {
+        QtSpice::Widget widget;
+        auto *first = new QtSpice::Session;
+        QtSpice::Session second;
+        QSignalSpy changed(&widget, &QtSpice::Widget::sessionChanged);
+        widget.setSession(first);
+        QCOMPARE(widget.session(), first);
+        widget.setSession(first);
+        QCOMPARE(changed.count(), 1);
+        widget.setSession(&second);
+        QCOMPARE(changed.count(), 2);
+        QImage image(20,20,QImage::Format_RGB32); image.fill(Qt::red);
+        QtSpice::SessionTestAccess::frame(*first, image);
+        QVERIFY(QtSpice::WidgetTestAccess::frame(widget).isNull());
+        delete first;
+        QCOMPARE(widget.session(), &second);
+        widget.setSession(nullptr);
+        QCOMPARE(changed.count(), 3);
+        widget.setSession(nullptr);
+        QCOMPARE(changed.count(), 3);
+        auto *owned = new QtSpice::Session;
+        widget.setSession(owned);
+        QtSpice::SessionTestAccess::frame(*owned, image);
+        delete owned;
+        QVERIFY(!widget.session());
+        QVERIFY(QtSpice::WidgetTestAccess::frame(widget).isNull());
+        QCOMPARE(QtSpice::WidgetTestAccess::status(widget), QStringLiteral("Disconnected"));
+        QCOMPARE(changed.count(), 5);
+    }
+    void clipboardAttachmentUsers() {
+        QtSpice::Session first, second;
+        QtSpice::Widget a,b;
+        a.setSession(&first); b.setSession(&first);
+        auto *bridge = first.findChild<QObject *>(QStringLiteral("sessionClipboard"));
+        QVERIFY(bridge);
+        QCOMPARE(bridge->property("users").toInt(), 2);
+        a.setSession(&first);
+        QCOMPARE(bridge->property("users").toInt(), 2);
+        a.setSession(nullptr);
+        QCOMPARE(bridge->property("users").toInt(), 1);
+        a.setSession(&second);
+        QCOMPARE(bridge->property("users").toInt(), 1);
+        b.setSession(nullptr);
+        QCOMPARE(bridge->property("users").toInt(), 0);
+        a.setSession(&first);
+        QCOMPARE(bridge->property("users").toInt(), 1);
+    }
+    void publicProperties() {
+        QtSpice::Widget widget;
+        QtSpice::Session session;
+        QVERIFY(widget.setProperty("session", QVariant::fromValue(&session)));
+        QCOMPARE(widget.property("session").value<QtSpice::Session *>(), &session);
+        QSignalSpy scaling(&widget, &QtSpice::Widget::scalingModeChanged);
+        QVERIFY(widget.setProperty("scalingMode", QVariant::fromValue(QtSpice::Widget::ScalingMode::NativePixels)));
+        QCOMPARE(widget.scalingMode(), QtSpice::Widget::ScalingMode::NativePixels);
+        widget.setProperty("scalingMode", QVariant::fromValue(widget.scalingMode()));
+        QCOMPARE(scaling.count(), 1);
+        QVERIFY(widget.setProperty("autoResizeGuest", false));
+        QVERIFY(!widget.autoResizeGuest());
+        QVERIFY(widget.setProperty("synchronizeLockKeys", false));
+        QVERIFY(!widget.synchronizeLockKeys());
+        QVERIFY(widget.setProperty("keyboardCaptureEnabled", true));
+        QVERIFY(widget.keyboardCaptureEnabled());
+        QVERIFY(widget.setProperty("monitor", QVariant::fromValue(QtSpice::MonitorId{0,1})));
+        QCOMPARE(widget.monitor(), (QtSpice::MonitorId{0,1}));
+        QVERIFY(!widget.setProperty("keyboardCaptureState", 0));
+        QVERIFY(!widget.setProperty("lockSynchronizationAvailable", true));
+        QCOMPARE(widget.property("autoResizeGuest").toBool(), false);
+    }
     void partialFramesStayIndependent() {
         QtSpice::Session s; QtSpice::Widget a,b;
         a.setSession(&s); b.setSession(&s);
